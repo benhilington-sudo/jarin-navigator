@@ -17,11 +17,6 @@ jobs:
         with:
           channel: stable
 
-      - name: Setup CocoaPods
-        run: |
-          cd ios
-          pod install --repo-update
-
       - name: Build IPA
         run: flutter build ipa --release --no-codesign
 
