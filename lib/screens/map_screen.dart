@@ -1,12 +1,8 @@
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 
-import '../data/world_data.dart';
-import '../l10n/strings.dart';
-import '../models/camera_spot.dart';
 import '../services/location_service.dart';
 import '../services/navigation_engine.dart';
 import '../services/settings_service.dart';
@@ -18,6 +14,7 @@ class MapScreen extends StatefulWidget {
   final VoidCallback onSearchTap;
   final VoidCallback onBusTap;
   final VoidCallback onSettingsTap;
+  final VoidCallback? onNearbyTap;
 
   const MapScreen({
     super.key,
@@ -25,6 +22,7 @@ class MapScreen extends StatefulWidget {
     required this.onSearchTap,
     required this.onBusTap,
     required this.onSettingsTap,
+    this.onNearbyTap,
   });
 
   @override
@@ -78,8 +76,9 @@ class _MapScreenState extends State<MapScreen> {
 
   void _centerOnUser() {
     final engine = context.read<NavigationEngine>();
-    _mapController.move(engine.position, _zoom < 12 ? 16 : _zoom);
     setState(() => _following = true);
+    final z = engine.isActive ? (_zoom < 14 ? 17.0 : _zoom) : (_zoom < 12 ? 16.0 : _zoom);
+    _mapController.moveAndRotate(engine.position, z, engine.heading);
   }
 
   void _onPositionChanged(MapCamera camera, bool hasGesture) {
@@ -89,33 +88,25 @@ class _MapScreenState extends State<MapScreen> {
     _zoom = camera.zoom;
   }
 
-  void _startNavigationFromQuick(String name, double lat, double lon) {
-    final engine = context.read<NavigationEngine>();
-    engine.findRoutes(
-      destination: LatLng(lat, lon),
-      name: name,
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
-    final s = context.watch<SettingsService>().strings;
     final engine = context.watch<NavigationEngine>();
     final settings = context.watch<SettingsService>();
     final isDark = settings.themeMode == ThemeMode.dark;
     final isRu = settings.language == AppLanguage.ru;
 
-    if (_following && engine.isActive) {
+    if (_following) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && _following) {
-          _mapController.moveAndRotate(engine.position, 16.5, engine.heading);
+          final z = engine.isActive ? (_zoom < 14 ? 17.0 : _zoom) : (_zoom < 12 ? 16.0 : _zoom);
+          _mapController.moveAndRotate(engine.position, z, engine.heading);
         }
       });
     }
 
     final tileUrl = isDark
-        ? 'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png'
-        : 'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png';
+        ? 'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png'
+        : 'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png';
 
     final padTop = MediaQuery.of(context).padding.top;
     final padBot = MediaQuery.of(context).padding.bottom;
@@ -127,7 +118,7 @@ class _MapScreenState extends State<MapScreen> {
           mapController: _mapController,
           options: MapOptions(
             initialCenter: engine.position,
-            initialZoom: 4,
+            initialZoom: _following ? 16 : 4,
             minZoom: 2,
             maxZoom: 19,
             onPositionChanged: _onPositionChanged,
@@ -140,9 +131,8 @@ class _MapScreenState extends State<MapScreen> {
             TileLayer(
               urlTemplate: tileUrl,
               userAgentPackageName: 'com.jarin.jarinnavigator',
-              tileProvider: NetworkTileProvider(),
-              tileSize: 256,
               maxZoom: 19,
+              subdomains: const ['a', 'b', 'c'],
             ),
             _buildRouteLayer(engine),
             MarkerLayer(
@@ -172,7 +162,7 @@ class _MapScreenState extends State<MapScreen> {
                 circles: [
                   CircleMarker(
                     point: engine.position,
-                    radius: 260,
+                    radius: 120,
                     useRadiusInMeter: true,
                     color: AppTheme.accent.withValues(alpha: 0.08),
                     borderColor: AppTheme.accent.withValues(alpha: 0.2),
@@ -197,7 +187,7 @@ class _MapScreenState extends State<MapScreen> {
               ),
               const SizedBox(width: 8),
               _TopBtn(
-                icon: Icons.directions_bus_rounded,
+                icon: Icons.local_gas_station_rounded,
                 onTap: widget.onBusTap,
                 isDark: isDark,
               ),
@@ -238,7 +228,7 @@ class _MapScreenState extends State<MapScreen> {
             children: [
               _SideBtn(
                 icon: Icons.local_parking_rounded,
-                onTap: () {},
+                onTap: widget.onNearbyTap ?? () {},
                 isDark: isDark,
               ),
               const SizedBox(height: 16),
@@ -299,36 +289,6 @@ class _MapScreenState extends State<MapScreen> {
             ),
           ),
 
-        // GPS warning
-        if (engine.isActive && !engine.gpsAvailable)
-          Positioned(
-            top: padTop + 60,
-            left: 12,
-            right: 12,
-            child: Card(
-              color: AppTheme.warning,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                child: Row(
-                  children: [
-                    const Icon(Icons.location_off_rounded, color: Colors.white, size: 20),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        isRu ? 'Включите геолокацию для навигации' : 'Enable location for navigation',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-
         // Route options panel
         if (engine.isSelecting)
           Positioned(
@@ -385,22 +345,35 @@ class _MapScreenState extends State<MapScreen> {
 
       return PolylineLayer(
         polylines: [
+          // Outer glow
+          Polyline(
+            points: pts,
+            strokeWidth: 16,
+            color: const Color(0xFF00E676).withValues(alpha: 0.12),
+          ),
           // Shadow
           Polyline(
             points: pts,
             strokeWidth: 10,
-            color: AppTheme.routeStart.withValues(alpha: 0.15),
+            color: const Color(0xFF00C853).withValues(alpha: 0.2),
           ),
-          // Gradient segments
+          // Main gradient
           for (var i = 0; i < count - 1; i++)
             Polyline(
               points: [pts[i], pts[i + 1]],
-              strokeWidth: 6,
+              strokeWidth: 7,
               color: Color.lerp(
-                AppTheme.routeStart,
-                AppTheme.routeEnd,
+                const Color(0xFF00E676),
+                const Color(0xFF00BCD4),
                 count > 1 ? i / (count - 1) : 0,
               )!,
+            ),
+          // White center highlight
+          for (var i = 0; i < count - 1; i++)
+            Polyline(
+              points: [pts[i], pts[i + 1]],
+              strokeWidth: 2,
+              color: Colors.white.withValues(alpha: 0.5),
             ),
         ],
       );
@@ -505,7 +478,6 @@ class _SideBtn extends StatelessWidget {
   final bool isDark;
   final Color? bg;
   final Color? fg;
-  final double size;
 
   const _SideBtn({
     required this.icon,
@@ -513,7 +485,6 @@ class _SideBtn extends StatelessWidget {
     required this.isDark,
     this.bg,
     this.fg,
-    this.size = 44,
   });
 
   @override
@@ -531,19 +502,26 @@ class _SideBtn extends StatelessWidget {
         child: GestureDetector(
           onTap: onTap,
           child: Container(
-            width: size,
-            height: size,
+            width: 44,
+            height: 44,
             decoration: BoxDecoration(
               color: bgColor,
               borderRadius: BorderRadius.circular(14),
               border: Border.all(
                 color: isDark
-                    ? Colors.white.withValues(alpha: 0.08)
-                    : Colors.black.withValues(alpha: 0.05),
+                    ? Colors.white.withValues(alpha: 0.1)
+                    : Colors.black.withValues(alpha: 0.06),
                 width: 0.5,
               ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.12),
+                  blurRadius: 10,
+                  offset: const Offset(0, 3),
+                ),
+              ],
             ),
-            child: Icon(icon, color: fgColor, size: size * 0.48),
+            child: Icon(icon, color: fgColor, size: 21),
           ),
         ),
       ),
@@ -581,13 +559,30 @@ class _TurnBanner extends StatelessWidget {
 
     return _GlassContainer(
       isDark: isDark,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      borderRadius: BorderRadius.circular(14),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      borderRadius: BorderRadius.circular(16),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 28, color: AppTheme.accent),
-          const SizedBox(width: 10),
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFF00E676), Color(0xFF00BCD4)],
+              ),
+              borderRadius: BorderRadius.circular(12),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF00E676).withValues(alpha: 0.3),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Icon(icon, size: 24, color: Colors.white),
+          ),
+          const SizedBox(width: 12),
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
@@ -595,7 +590,7 @@ class _TurnBanner extends StatelessWidget {
               Text(
                 dist,
                 style: TextStyle(
-                  fontSize: 18,
+                  fontSize: 20,
                   fontWeight: FontWeight.w800,
                   color: isDark ? AppTheme.darkText : AppTheme.lightText,
                 ),
@@ -846,21 +841,28 @@ class _ProgressBar extends StatelessWidget {
 
     return ClipRRect(
       child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+        filter: ui.ImageFilter.blur(sigmaX: 24, sigmaY: 24),
         child: Container(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
           decoration: BoxDecoration(
             color: isDark
-                ? Colors.white.withValues(alpha: 0.08)
-                : Colors.white.withValues(alpha: 0.72),
+                ? Colors.white.withValues(alpha: 0.06)
+                : Colors.white.withValues(alpha: 0.78),
             border: Border(
               top: BorderSide(
                 color: isDark
                     ? Colors.white.withValues(alpha: 0.1)
-                    : Colors.black.withValues(alpha: 0.08),
+                    : Colors.black.withValues(alpha: 0.06),
                 width: 0.5,
               ),
             ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: isDark ? 0.4 : 0.1),
+                blurRadius: 20,
+                offset: const Offset(0, -6),
+              ),
+            ],
           ),
           child: SafeArea(
         top: false,
@@ -870,12 +872,19 @@ class _ProgressBar extends StatelessWidget {
             Row(
               children: [
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                   decoration: BoxDecoration(
                     gradient: const LinearGradient(
-                      colors: [AppTheme.success, AppTheme.routeEnd],
+                      colors: [Color(0xFF00E676), Color(0xFF00BCD4)],
                     ),
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.circular(10),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF00E676).withValues(alpha: 0.3),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
                   ),
                   child: Text(
                     etaTime,
@@ -886,7 +895,7 @@ class _ProgressBar extends StatelessWidget {
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 10),
                 Text(
                   '$totalRemaining ${isRu ? "осталось" : "left"}',
                   style: TextStyle(
@@ -949,103 +958,6 @@ class _ProgressBar extends StatelessWidget {
   }
 }
 
-// ── Camera marker ──
-class _CameraMarker extends StatefulWidget {
-  final CameraSpot camera;
-  final bool highlighted;
-  final Strings strings;
-
-  const _CameraMarker({
-    required this.camera,
-    required this.highlighted,
-    required this.strings,
-  });
-
-  @override
-  State<_CameraMarker> createState() => _CameraMarkerState();
-}
-
-class _CameraMarkerState extends State<_CameraMarker>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _pulse;
-  late final Animation<double> _scale;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulse = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 900),
-      lowerBound: 0,
-      upperBound: 1,
-    );
-    _scale = Tween(begin: 1.0, end: 1.45).animate(
-      CurvedAnimation(parent: _pulse, curve: Curves.easeInOut),
-    );
-    if (widget.highlighted) _pulse.repeat(reverse: true);
-  }
-
-  @override
-  void didUpdateWidget(covariant _CameraMarker old) {
-    super.didUpdateWidget(old);
-    if (old.highlighted != widget.highlighted) {
-      if (widget.highlighted) {
-        _pulse.repeat(reverse: true);
-      } else {
-        _pulse.stop();
-        _pulse.value = 0;
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    _pulse.dispose();
-    super.dispose();
-  }
-
-  Color get _color => switch (widget.camera.type) {
-        CameraType.speed => const Color(0xFFFFB300),
-        CameraType.trafficLight => const Color(0xFF4CAF50),
-        CameraType.lane => const Color(0xFF9C27B0),
-        CameraType.redLight => const Color(0xFFF44336),
-      };
-
-  @override
-  Widget build(BuildContext context) {
-    final size = widget.highlighted ? 34.0 : 22.0;
-    return Center(
-      child: AnimatedBuilder(
-        animation: _pulse,
-        builder: (context, _) {
-          return Transform.scale(
-            scale: widget.highlighted ? _scale.value : 1.0,
-            child: Container(
-              width: size,
-              height: size,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: _color.withValues(alpha: widget.highlighted ? 0.85 : 0.7),
-                border: Border.all(color: Colors.white, width: widget.highlighted ? 3 : 2),
-                boxShadow: widget.highlighted
-                    ? [BoxShadow(color: _color.withValues(alpha: 0.8), blurRadius: 16, spreadRadius: 4)]
-                    : null,
-              ),
-              child: Center(
-                child: Icon(
-                  Icons.photo_camera_rounded,
-                  size: widget.highlighted ? 16 : 10,
-                  color: Colors.white,
-                ),
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
 // ── Destination marker ──
 class _DestinationMarker extends StatelessWidget {
   final String name;
@@ -1058,17 +970,17 @@ class _DestinationMarker extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
           decoration: BoxDecoration(
             gradient: const LinearGradient(
-              colors: [AppTheme.accent, Color(0xFF0055D4)],
+              colors: [Color(0xFFFF5252), Color(0xFFD32F2F)],
             ),
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(10),
             boxShadow: [
               BoxShadow(
-                color: AppTheme.accent.withValues(alpha: 0.4),
-                blurRadius: 8,
-                offset: const Offset(0, 2),
+                color: const Color(0xFFFF5252).withValues(alpha: 0.5),
+                blurRadius: 12,
+                offset: const Offset(0, 4),
               ),
             ],
           ),
@@ -1077,14 +989,39 @@ class _DestinationMarker extends StatelessWidget {
             style: const TextStyle(
               color: Colors.white,
               fontSize: 11,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w700,
             ),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
         ),
-        Icon(Icons.arrow_drop_down, color: AppTheme.accent, size: 24),
+        CustomPaint(
+          size: const Size(20, 12),
+          painter: _PinPainter(),
+        ),
       ],
     );
   }
+}
+
+class _PinPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [Color(0xFFD32F2F), Color(0xFFB71C1C)],
+      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
+
+    final path = ui.Path()
+      ..moveTo(0, 0)
+      ..lineTo(size.width, 0)
+      ..lineTo(size.width / 2, size.height)
+      ..close();
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

@@ -112,7 +112,7 @@ class ShiftReportService extends ChangeNotifier {
 
   void _startTick() {
     _tickTimer?.cancel();
-    _tickTimer = Timer.periodic(const Duration(seconds: 30), (_) => notifyListeners());
+    _tickTimer = Timer.periodic(const Duration(seconds: 1), (_) => notifyListeners());
   }
 
   int get totalTrips => _trips.length;
@@ -124,6 +124,7 @@ class ShiftReportService extends ChangeNotifier {
   }
 
   Duration get totalTime {
+    if (_isOnShift) return shiftDuration;
     var sec = 0;
     for (final t in _trips) sec += t.durationSeconds;
     return Duration(seconds: sec);

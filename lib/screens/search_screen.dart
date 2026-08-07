@@ -8,8 +8,11 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../l10n/strings.dart';
+import '../data/russian_cities.dart';
+import '../data/russian_streets.dart';
 import '../services/geocoder_service.dart';
 import '../services/navigation_engine.dart';
+import '../services/place_photo_service.dart';
 import '../services/settings_service.dart';
 import '../theme/app_theme.dart';
 
@@ -20,14 +23,16 @@ class _SearchItem {
   final IconData icon;
   final Color color;
   final bool remote;
+  String? photoUrl;
 
-  const _SearchItem({
+  _SearchItem({
     required this.title,
     required this.subtitle,
     required this.position,
     required this.icon,
     required this.color,
     this.remote = false,
+    this.photoUrl,
   });
 }
 
@@ -111,7 +116,39 @@ class _SearchScreenState extends State<SearchScreen> {
 
   void _onQueryChanged() {
     _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 500), () => _runSearch());
+    _debounce = Timer(const Duration(milliseconds: 300), () => _runSearch());
+  }
+
+  /// Levenshtein distance for fuzzy street matching
+  static int _levenshtein(String a, String b) {
+    if (a.isEmpty) return b.length;
+    if (b.isEmpty) return a.length;
+    final la = a.length, lb = b.length;
+    final dp = List.generate(la + 1, (i) => List<int>.filled(lb + 1, 0));
+    for (var i = 0; i <= la; i++) dp[i][0] = i;
+    for (var j = 0; j <= lb; j++) dp[0][j] = j;
+    for (var i = 1; i <= la; i++) {
+      for (var j = 1; j <= lb; j++) {
+        final cost = a[i - 1] == b[j - 1] ? 0 : 1;
+        dp[i][j] = [
+          dp[i - 1][j] + 1,
+          dp[i][j - 1] + 1,
+          dp[i - 1][j - 1] + cost,
+        ].reduce((a, b) => a < b ? a : b);
+      }
+    }
+    return dp[la][lb];
+  }
+
+  /// Clean query for Nominatim: remove house numbers, extract street+city
+  static String _cleanQueryForNominatim(String q) {
+    // Remove house numbers like "28н", "12к1", "5/2"
+    var cleaned = q.replaceAll(RegExp(r'\d+[а-яА-Я]?\b'), '').trim();
+    // Remove standalone numbers
+    cleaned = cleaned.replaceAll(RegExp(r'\b\d+\b'), '').trim();
+    // Remove excess spaces
+    cleaned = cleaned.replaceAll(RegExp(r'\s{2,}'), ' ');
+    return cleaned.isNotEmpty ? cleaned : q;
   }
 
   Future<void> _runSearch() async {
@@ -132,9 +169,94 @@ class _SearchScreenState extends State<SearchScreen> {
       _results = [];
     });
 
-    final isRu =
-        context.read<SettingsService>().language == AppLanguage.ru;
-    final remote = await _geocoder.search(q, lang: isRu ? 'ru' : 'en');
+    final qLower = q.toLowerCase();
+
+    // ── 1) Local cities: instant ──
+    final localHits = russianCities.where((c) {
+      final cn = c.name.toLowerCase();
+      return qLower.contains(cn);
+    }).take(8).toList();
+
+    final localItems = [
+      for (final c in localHits)
+        _SearchItem(
+          title: c.name,
+          subtitle: c.region,
+          position: LatLng(c.lat, c.lng),
+          icon: Icons.location_city_rounded,
+          color: AppTheme.accent,
+          remote: false,
+        ),
+    ];
+
+    // ── 2) Local streets: fuzzy match ──
+    // Try exact match first
+    var streetHits = russianStreets.where((s) {
+      return qLower.contains(s.street.toLowerCase()) &&
+          qLower.contains(s.city.toLowerCase());
+    }).take(5).toList();
+
+    // Fuzzy: Levenshtein ≤ 3 on street name if query has 4+ chars
+    if (streetHits.isEmpty && qLower.length >= 4) {
+      streetHits = russianStreets.where((s) {
+        final streetLower = s.street.toLowerCase();
+        if (qLower.contains(s.city.toLowerCase())) {
+          return _levenshtein(qLower, streetLower) <= 3 ||
+              _levenshtein(qLower.split(' ').first, streetLower) <= 2;
+        }
+        return false;
+      }).take(5).toList();
+    }
+
+    // Street-only match (any city)
+    if (streetHits.isEmpty) {
+      streetHits = russianStreets.where((s) {
+        return qLower.contains(s.street.toLowerCase());
+      }).take(5).toList();
+    }
+
+    // Fuzzy street-only
+    if (streetHits.isEmpty && qLower.length >= 4) {
+      streetHits = russianStreets.where((s) {
+        return _levenshtein(qLower.split(' ').first, s.street.toLowerCase()) <= 2;
+      }).take(5).toList();
+    }
+
+    localItems.addAll([
+      for (final s in streetHits)
+        _SearchItem(
+          title: '${s.street}, ${s.city}',
+          subtitle: '',
+          position: LatLng(s.lat, s.lng),
+          icon: Icons.route_rounded,
+          color: AppTheme.accent,
+          remote: false,
+        ),
+    ]);
+
+    if (mounted) {
+      setState(() {
+        _results = localItems;
+      });
+    }
+
+    // ── 3) Nominatim: primary search, always runs ──
+    final isRu = context.read<SettingsService>().language == AppLanguage.ru;
+    LatLng? nearCity;
+    for (final c in russianCities) {
+      if (qLower.contains(c.name.toLowerCase())) {
+        nearCity = LatLng(c.lat, c.lng);
+        break;
+      }
+    }
+
+    // Clean query: remove house numbers for better Nominatim results
+    final cleanQ = _cleanQueryForNominatim(q);
+    final remote = await _geocoder.search(
+      cleanQ,
+      lang: isRu ? 'ru' : 'en',
+      near: nearCity,
+    );
     if (!mounted || _controller.text.trim() != q) return;
 
     final remoteItems = [
@@ -149,11 +271,34 @@ class _SearchScreenState extends State<SearchScreen> {
         ),
     ];
 
+    // ── 4) Merge: local first, then remote, skip duplicates ──
+    final seen = <String>{};
+    final merged = <_SearchItem>[];
+    for (final item in [...localItems, ...remoteItems]) {
+      final key =
+          '${item.position.latitude.toStringAsFixed(4)}_${item.position.longitude.toStringAsFixed(4)}';
+      if (seen.add(key)) merged.add(item);
+    }
+
     setState(() {
       _loading = false;
-      _geocodeError = remote.isEmpty;
-      _results = remoteItems;
+      _geocodeError = merged.isEmpty;
+      _results = merged;
     });
+
+    for (final item in merged) {
+      final photo = await PlacePhotoService.fetchPhoto(
+        name: item.title,
+        position: item.position,
+        lang: isRu ? 'ru' : 'en',
+      );
+      if (mounted && photo != null) {
+        final idx = _results.indexWhere((r) => r.title == item.title);
+        if (idx >= 0) {
+          setState(() => _results[idx].photoUrl = photo);
+        }
+      }
+    }
   }
 
   void _startNavigation(_SearchItem item) {
@@ -250,7 +395,7 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   Widget _buildResults(Strings s, Color sub, NavigationEngine engine) {
-    if (_loading) {
+    if (_loading && _results.isEmpty) {
       return const Center(
         child: CircularProgressIndicator(strokeWidth: 2),
       );
@@ -274,11 +419,27 @@ class _SearchScreenState extends State<SearchScreen> {
         ),
       );
     }
+    // Show results + loading indicator at bottom while Nominatim works
     return ListView.separated(
       padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-      itemCount: _results.length,
-      separatorBuilder: (_, _) => const Divider(height: 1),
+      itemCount: _results.length + (_loading ? 1 : 0),
+      separatorBuilder: (_, i) => i < _results.length
+          ? const Divider(height: 1)
+          : const SizedBox.shrink(),
       itemBuilder: (context, i) {
+        if (i == _results.length) {
+          // Loading indicator at bottom
+          return const Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: Center(
+              child: SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          );
+        }
         final item = _results[i];
         final dist = const Distance()
             .as(LengthUnit.Meter, engine.position, item.position);
@@ -287,6 +448,7 @@ class _SearchScreenState extends State<SearchScreen> {
           subtitle: item.subtitle,
           icon: item.icon,
           color: item.color,
+          photoUrl: item.photoUrl,
           eta: '${s.routeTime} ${_formatEta(dist)}',
           onTap: () => _startNavigation(item),
         );
@@ -350,6 +512,7 @@ class _ResultTile extends StatelessWidget {
   final IconData icon;
   final Color color;
   final String eta;
+  final String? photoUrl;
   final VoidCallback onTap;
 
   const _ResultTile({
@@ -359,6 +522,7 @@ class _ResultTile extends StatelessWidget {
     required this.color,
     required this.eta,
     required this.onTap,
+    this.photoUrl,
   });
 
   @override
@@ -369,14 +533,33 @@ class _ResultTile extends StatelessWidget {
     return ListTile(
       onTap: onTap,
       contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-      leading: Container(
-        width: 40,
-        height: 40,
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Icon(icon, color: color, size: 20),
+      leading: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: photoUrl != null
+            ? Image.network(
+                photoUrl!,
+                width: 48,
+                height: 48,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(icon, color: color, size: 20),
+                ),
+              )
+            : Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon, color: color, size: 20),
+              ),
       ),
       title: Text(
         title,

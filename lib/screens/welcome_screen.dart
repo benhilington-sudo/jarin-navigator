@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../services/auth_service.dart';
 import '../services/settings_service.dart';
 import '../theme/app_theme.dart';
 import 'login_screen.dart';
@@ -127,8 +128,15 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                 // Кнопка Google
                 OutlinedButton.icon(
                   onPressed: () async {
-                    // Имитация Google OAuth (в реальном приложении — Firebase Auth)
-                    _showGoogleSignInSheet(context);
+                    final auth = context.read<AuthService>();
+                    final settings = context.read<SettingsService>();
+                    final s = settings.strings;
+                    final error = await auth.signInWithGoogle();
+                    if (error != null && mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text(error)),
+                      );
+                    }
                   },
                   icon: const Icon(Icons.g_mobiledata_rounded, size: 28),
                   label: Text(s.loginWithGoogle),
@@ -171,97 +179,4 @@ class _WelcomeScreenState extends State<WelcomeScreen>
     );
   }
 
-  void _showGoogleSignInSheet(BuildContext context) {
-    final settings = context.read<SettingsService>();
-    final isRu = settings.language == AppLanguage.ru;
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => Container(
-        padding: const EdgeInsets.all(24),
-        decoration: BoxDecoration(
-          color: isDark ? AppTheme.darkSurface : AppTheme.lightSurface,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: isDark ? AppTheme.darkBorder : AppTheme.lightBorder,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            const SizedBox(height: 20),
-            Container(
-              width: 56,
-              height: 56,
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(14),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.1),
-                    blurRadius: 10,
-                  ),
-                ],
-              ),
-              child: const Center(
-                child: Text(
-                  'G',
-                  style: TextStyle(
-                    fontSize: 28,
-                    fontWeight: FontWeight.w700,
-                    color: Color(0xFF4285F4),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              isRu ? 'Вход через Google' : 'Sign in with Google',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              isRu
-                  ? 'Вы будете перенаправлены на страницу авторизации Google'
-                  : 'You will be redirected to Google authorization',
-              style: Theme.of(context).textTheme.bodyMedium,
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () {
-                  Navigator.of(ctx).pop();
-                  settings.signIn(
-                    'user@gmail.com',
-                    name: 'Google User',
-                  );
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text(settings.strings.googleSimulated)),
-                  );
-                },
-                child: Text(
-                  isRu ? 'Продолжить с Google' : 'Continue with Google',
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: Text(isRu ? 'Отмена' : 'Cancel'),
-            ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
-    );
-  }
 }

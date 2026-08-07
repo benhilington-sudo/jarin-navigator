@@ -1,9 +1,7 @@
-import 'dart:math';
-
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../services/settings_service.dart';
+import '../services/auth_service.dart';
 import '../theme/app_theme.dart';
 
 class VerificationScreen extends StatefulWidget {
@@ -20,109 +18,54 @@ class VerificationScreen extends StatefulWidget {
   State<VerificationScreen> createState() => _VerificationScreenState();
 }
 
-class _VerificationScreenState extends State<VerificationScreen>
-    with SingleTickerProviderStateMixin {
-  final _controllers = List.generate(6, (_) => TextEditingController());
-  final _focusNodes = List.generate(6, (_) => FocusNode());
-  String? _error;
-  late String _generatedCode;
-  bool _codeSent = false;
+class _VerificationScreenState extends State<VerificationScreen> {
+  bool _checking = false;
   bool _sending = false;
-  late AnimationController _shake;
-  late Animation<double> _shakeAnim;
 
-  @override
-  void initState() {
-    super.initState();
-    _generatedCode = _generateCode();
-    _shake = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 500),
-    );
-    _shakeAnim = Tween(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _shake, curve: Curves.elasticOut),
-    );
-    _sendCode();
-  }
-
-  @override
-  void dispose() {
-    for (final c in _controllers) {
-      c.dispose();
-    }
-    for (final f in _focusNodes) {
-      f.dispose();
-    }
-    _shake.dispose();
-    super.dispose();
-  }
-
-  String _generateCode() {
-    final rng = Random();
-    return List.generate(6, (_) => rng.nextInt(10)).join();
-  }
-
-  Future<void> _sendCode() async {
+  Future<void> _resend() async {
     setState(() => _sending = true);
-    // Имитация отправки email (в реальном приложении — Firebase/SMTP)
-    await Future.delayed(const Duration(seconds: 2));
+    await context.read<AuthService>().sendVerification();
+    if (!mounted) return;
+    setState(() => _sending = false);
     if (mounted) {
-      setState(() {
-        _sending = false;
-        _codeSent = true;
-      });
-      // Показываем код в snackbar для тестирования
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Код отправлен на ${widget.email}\nДля теста: $_generatedCode',
-            ),
-            duration: const Duration(seconds: 8),
-            backgroundColor: AppTheme.accent,
-          ),
-        );
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Письмо отправлено повторно')),
+      );
     }
   }
 
-  String get _code => _controllers.map((c) => c.text).join();
+  Future<void> _checkVerified() async {
+    setState(() => _checking = true);
+    final auth = context.read<AuthService>();
+    final verified = await auth.reloadAndCheckEmailVerified();
+    if (!mounted) return;
+    setState(() => _checking = false);
 
-  void _onChanged(int index, String value) {
-    if (value.isNotEmpty && index < 5) {
-      _focusNodes[index + 1].requestFocus();
+    if (verified) {
+      Navigator.of(context).popUntil((r) => r.isFirst);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Email ещё не подтверждён. Проверьте папку "Спам".'),
+          backgroundColor: AppTheme.warning,
+        ),
+      );
     }
-    if (_error != null) setState(() => _error = null);
-    if (index == 5 && _code.length == 6) _submit();
-  }
-
-  void _submit() {
-    if (_code != _generatedCode) {
-      _shake.forward(from: 0);
-      setState(() => _error = 'Неверный код. Попробуйте снова.');
-      return;
-    }
-    context.read<SettingsService>().signIn(widget.email, name: widget.name);
-    Navigator.of(context).popUntil((r) => r.isFirst);
   }
 
   @override
   Widget build(BuildContext context) {
-    final settings = context.watch<SettingsService>();
-    final s = settings.strings;
-    final isRu = settings.language == AppLanguage.ru;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final sub = isDark ? AppTheme.darkSubtext : AppTheme.lightSubtext;
 
     return Scaffold(
-      appBar: AppBar(title: Text(s.verificationTitle)),
+      appBar: AppBar(title: const Text('Подтверждение email')),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Иконкаvelope
               Center(
                 child: Container(
                   width: 72,
@@ -140,7 +83,7 @@ class _VerificationScreenState extends State<VerificationScreen>
               ),
               const SizedBox(height: 20),
               Text(
-                s.verificationHint,
+                'Письмо с ссылкой для подтверждения отправлено на:',
                 style: Theme.of(context).textTheme.bodyLarge,
                 textAlign: TextAlign.center,
               ),
@@ -153,88 +96,32 @@ class _VerificationScreenState extends State<VerificationScreen>
                     ),
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 8),
-              if (_sending)
-                const Center(
-                  child: Padding(
-                    padding: EdgeInsets.all(12),
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                ),
               const SizedBox(height: 24),
-              AnimatedBuilder(
-                animation: _shakeAnim,
-                builder: (context, child) {
-                  return Transform.translate(
-                    offset: Offset(
-                      sin(_shakeAnim.value * 2 * pi * 3) * 8 * (1 - _shakeAnim.value),
-                      0,
-                    ),
-                    child: child,
-                  );
-                },
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: List.generate(6, (i) {
-                    return SizedBox(
-                      width: 46,
-                      height: 58,
-                      child: TextField(
-                        controller: _controllers[i],
-                        focusNode: _focusNodes[i],
-                        keyboardType: TextInputType.number,
-                        textAlign: TextAlign.center,
-                        maxLength: 1,
-                        style: const TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.w800,
-                        ),
-                        decoration: InputDecoration(
-                          counterText: '',
-                          contentPadding: const EdgeInsets.symmetric(vertical: 12),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: const BorderSide(
-                              color: AppTheme.accent,
-                              width: 2,
-                            ),
-                          ),
-                        ),
-                        onChanged: (v) => _onChanged(i, v),
-                      ),
-                    );
-                  }),
-                ),
+              Text(
+                '1. Откройте письмо и нажмите ссылку\n2. Вернитесь сюда и нажмите "Проверить"',
+                style: TextStyle(color: sub, fontSize: 14),
+                textAlign: TextAlign.center,
               ),
-              if (_error != null) ...[
-                const SizedBox(height: 12),
-                Text(
-                  _error!,
-                  style: TextStyle(
-                    color: AppTheme.danger,
-                    fontWeight: FontWeight.w600,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ],
-              const SizedBox(height: 20),
+              const SizedBox(height: 28),
               ElevatedButton(
-                onPressed: _submit,
-                child: Text(s.verify),
+                onPressed: _checking ? null : _checkVerified,
+                child: _checking
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      )
+                    : const Text('Проверить'),
               ),
               const SizedBox(height: 12),
               TextButton(
-                onPressed: _sending ? null : _sendCode,
+                onPressed: _sending ? null : _resend,
                 child: Text(
-                  isRu ? 'Отправить код повторно' : 'Resend code',
+                  _sending ? 'Отправка...' : 'Отправить письмо повторно',
                   style: TextStyle(color: sub),
                 ),
               ),
               const Spacer(),
-              // Подсказка для тестирования
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
@@ -246,15 +133,9 @@ class _VerificationScreenState extends State<VerificationScreen>
                     const Icon(Icons.info_outline, color: AppTheme.warning, size: 18),
                     const SizedBox(width: 8),
                     Expanded(
-                    child: Text(
-                      isRu
-                          ? 'Код: $_generatedCode'
-                          : 'Code: $_generatedCode',
-                        style: TextStyle(
-                          color: sub,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 13,
-                        ),
+                      child: Text(
+                        'Не забудьте проверить папку "Спам"',
+                        style: TextStyle(color: sub, fontSize: 13),
                       ),
                     ),
                   ],

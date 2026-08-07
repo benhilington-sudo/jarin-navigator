@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../services/auth_service.dart';
 import '../services/settings_service.dart';
 import '../theme/app_theme.dart';
 
@@ -12,9 +13,11 @@ class SettingsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<SettingsService>();
+    final auth = context.watch<AuthService>();
     final s = settings.strings;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final sub = isDark ? AppTheme.darkSubtext : AppTheme.lightSubtext;
+    final user = auth.user;
 
     return Scaffold(
       appBar: AppBar(
@@ -29,7 +32,7 @@ class SettingsScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          if (settings.isLoggedIn) ...[
+          if (auth.isLoggedIn) ...[
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
@@ -38,11 +41,16 @@ class SettingsScreen extends StatelessWidget {
                     CircleAvatar(
                       radius: 26,
                       backgroundColor: AppTheme.accent.withValues(alpha: 0.18),
-                      child: Icon(
-                        Icons.person_rounded,
-                        size: 30,
-                        color: AppTheme.accent,
-                      ),
+                      backgroundImage: user?.photoUrl != null
+                          ? NetworkImage(user!.photoUrl!)
+                          : null,
+                      child: user?.photoUrl == null
+                          ? Icon(
+                              Icons.person_rounded,
+                              size: 30,
+                              color: AppTheme.accent,
+                            )
+                          : null,
                     ),
                     const SizedBox(width: 14),
                     Expanded(
@@ -50,13 +58,28 @@ class SettingsScreen extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            settings.userName ?? 'User',
+                            user?.displayName ?? user?.email ?? 'User',
                             style: Theme.of(context).textTheme.titleMedium,
                           ),
-                          Text(
-                            settings.userEmail ?? '',
-                            style: Theme.of(context).textTheme.bodyMedium,
-                          ),
+                          if (user?.email != null)
+                            Text(
+                              user!.email!,
+                              style: Theme.of(context).textTheme.bodyMedium,
+                            ),
+                          if (user?.emailVerified == false) ...[
+                            const SizedBox(height: 4),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: AppTheme.warning.withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: const Text(
+                                'Email не подтверждён',
+                                style: TextStyle(fontSize: 11, color: AppTheme.warning),
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -160,12 +183,14 @@ class SettingsScreen extends StatelessWidget {
               ),
             ),
           ),
-          if (settings.isLoggedIn) ...[
+          if (auth.isLoggedIn) ...[
             const SizedBox(height: 20),
             OutlinedButton.icon(
-              onPressed: () {
-                settings.signOut();
-                Navigator.of(context).popUntil((r) => r.isFirst);
+              onPressed: () async {
+                await auth.signOut();
+                if (context.mounted) {
+                  Navigator.of(context).popUntil((r) => r.isFirst);
+                }
               },
               style: OutlinedButton.styleFrom(
                 side: BorderSide(color: AppTheme.danger.withValues(alpha: 0.6)),

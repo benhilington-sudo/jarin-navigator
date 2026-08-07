@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 
-enum NavTab { map, search, bus, settings }
+enum NavTab { map, search, nearby, settings }
 
 class CustomBottomBar extends StatelessWidget {
   final NavTab currentTab;

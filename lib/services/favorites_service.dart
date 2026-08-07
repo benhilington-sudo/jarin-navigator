@@ -8,6 +8,7 @@ enum FavoriteIcon { home, work, star, heart, pin }
 class FavoritePlace {
   final String id;
   final String name;
+  final String address;
   final double lat;
   final double lng;
   final FavoriteIcon icon;
@@ -16,6 +17,7 @@ class FavoritePlace {
   const FavoritePlace({
     required this.id,
     required this.name,
+    this.address = '',
     required this.lat,
     required this.lng,
     required this.icon,
@@ -25,6 +27,7 @@ class FavoritePlace {
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
+        'address': address,
         'lat': lat,
         'lng': lng,
         'icon': icon.name,
@@ -34,6 +37,7 @@ class FavoritePlace {
   factory FavoritePlace.fromJson(Map<String, dynamic> j) => FavoritePlace(
         id: j['id'] ?? '',
         name: j['name'] ?? '',
+        address: j['address'] ?? '',
         lat: (j['lat'] as num?)?.toDouble() ?? 0,
         lng: (j['lng'] as num?)?.toDouble() ?? 0,
         icon: FavoriteIcon.values.firstWhere(
@@ -80,6 +84,7 @@ class FavoritesService extends ChangeNotifier {
 
   Future<void> add({
     required String name,
+    String address = '',
     required double lat,
     required double lng,
     FavoriteIcon icon = FavoriteIcon.pin,
@@ -87,6 +92,7 @@ class FavoritesService extends ChangeNotifier {
     final place = FavoritePlace(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       name: name,
+      address: address,
       lat: lat,
       lng: lng,
       icon: icon,

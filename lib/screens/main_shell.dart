@@ -2,15 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 
-import '../services/favorites_service.dart';
 import '../services/navigation_engine.dart';
 import '../services/settings_service.dart';
-import '../services/shift_report_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/custom_bottom_bar.dart';
-import 'bus_stop_screen.dart';
 import 'favorites_screen.dart';
 import 'map_screen.dart';
+import 'nearby_screen.dart';
 import 'search_screen.dart';
 import 'settings_screen.dart';
 import 'shift_report_screen.dart';
@@ -99,11 +97,11 @@ class _MainShellState extends State<MainShell> with SingleTickerProviderStateMix
                 isDark: isDark,
               ),
               _MenuItem(
-                icon: Icons.directions_bus_rounded,
-                title: isRu ? 'Автобусы' : 'Buses',
+                icon: Icons.local_gas_station_rounded,
+                title: isRu ? 'Поблизости' : 'Nearby',
                 onTap: () {
                   Navigator.pop(ctx);
-                  _onTab(NavTab.bus);
+                  _onTab(NavTab.nearby);
                 },
                 isDark: isDark,
               ),
@@ -166,11 +164,12 @@ class _MainShellState extends State<MainShell> with SingleTickerProviderStateMix
             MapScreen(
               onMenuTap: _openMenu,
               onSearchTap: () => _onTab(NavTab.search),
-              onBusTap: () => _onTab(NavTab.bus),
+              onBusTap: () => _onTab(NavTab.nearby),
               onSettingsTap: () => _onTab(NavTab.settings),
+              onNearbyTap: () => _onTab(NavTab.nearby),
             ),
             SearchScreen(onNavigate: _goToMap, onBack: () => _onTab(NavTab.map)),
-            BusStopScreen(onBack: () => _onTab(NavTab.map)),
+            NearbyScreen(onBack: () => _onTab(NavTab.map), onNavigate: _navigateTo),
             SettingsScreen(onBack: () => _onTab(NavTab.map)),
           ],
         ),

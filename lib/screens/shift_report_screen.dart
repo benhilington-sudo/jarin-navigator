@@ -155,8 +155,10 @@ class ShiftReportScreen extends StatelessWidget {
   String _fmtDuration(Duration d) {
     final h = d.inHours;
     final m = d.inMinutes % 60;
-    if (h > 0) return '$hч $mм';
-    return '$m мин';
+    final s = d.inSeconds % 60;
+    if (h > 0) return '$hч ${m.toString().padLeft(2, '0')}м';
+    if (m > 0) return '$mм ${s.toString().padLeft(2, '0')}с';
+    return '$sс';
   }
 }
 

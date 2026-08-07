@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'screens/location_permission_screen.dart';
 import 'screens/main_shell.dart';
 import 'screens/welcome_screen.dart';
+import 'services/auth_service.dart';
 import 'services/favorites_service.dart';
 import 'services/navigation_engine.dart';
 import 'services/settings_service.dart';
@@ -16,8 +17,9 @@ import 'theme/app_theme.dart';
 
 class JarinApp extends StatefulWidget {
   final SettingsService settings;
+  final bool firebaseReady;
 
-  const JarinApp({super.key, required this.settings});
+  const JarinApp({super.key, required this.settings, this.firebaseReady = false});
 
   @override
   State<JarinApp> createState() => _JarinAppState();
@@ -35,7 +37,6 @@ class _JarinAppState extends State<JarinApp> {
 
   Future<void> _checkLocation() async {
     try {
-      // На вебе — пробуем сразу получить позицию (браузер запросит разрешение сам)
       if (kIsWeb) {
         try {
           final pos = await Geolocator.getCurrentPosition(
@@ -54,7 +55,6 @@ class _JarinAppState extends State<JarinApp> {
             });
           }
         } catch (_) {
-          // Браузер блокировал или пользователь отказался — пропускаем, не показываем экран
           setState(() {
             _locationGranted = true;
             _checking = false;
@@ -63,7 +63,6 @@ class _JarinAppState extends State<JarinApp> {
         return;
       }
 
-      // Мобильная проверка
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
         setState(() {
@@ -123,6 +122,7 @@ class _JarinAppState extends State<JarinApp> {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider.value(value: s),
+        ChangeNotifierProvider(create: (_) => AuthService()),
         Provider.value(value: TtsService(s)),
         ChangeNotifierProvider(
           create: (_) => NavigationEngine(s, TtsService(s)),
@@ -140,15 +140,15 @@ class _JarinAppState extends State<JarinApp> {
               shift.recordTrip(dist, dur);
             }
           };
-          return Consumer<SettingsService>(
-            builder: (context, settings, _) {
+          return Consumer<AuthService>(
+            builder: (context, auth, _) {
               return MaterialApp(
                 title: 'Jarin',
                 debugShowCheckedModeBanner: false,
                 theme: AppTheme.light(),
                 darkTheme: AppTheme.dark(),
-                themeMode: settings.themeMode,
-                home: _buildHome(settings),
+                themeMode: s.themeMode,
+                home: _buildHome(s, auth),
               );
             },
           );
@@ -157,7 +157,7 @@ class _JarinAppState extends State<JarinApp> {
     );
   }
 
-  Widget _buildHome(SettingsService settings) {
+  Widget _buildHome(SettingsService settings, AuthService auth) {
     if (_checking) {
       return Scaffold(
         backgroundColor: Theme.of(context).scaffoldBackgroundColor,
@@ -171,7 +171,10 @@ class _JarinAppState extends State<JarinApp> {
       return LocationPermissionScreen(onGranted: _onLocationGranted);
     }
 
-    if (!settings.isLoggedIn) {
+    if (!auth.isLoggedIn) {
+      if (!widget.firebaseReady) {
+        return const MainShell();
+      }
       return const WelcomeScreen();
     }
 

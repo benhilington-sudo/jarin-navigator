@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 
-import '../l10n/strings.dart';
+import '../data/russian_cities.dart';
+import '../data/russian_streets.dart';
 import '../services/favorites_service.dart';
+import '../services/geocoder_service.dart';
 import '../services/settings_service.dart';
 import '../theme/app_theme.dart';
 
@@ -17,6 +19,29 @@ class FavoritesScreen extends StatefulWidget {
 }
 
 class _FavoritesScreenState extends State<FavoritesScreen> {
+  Future<LatLng?> _geocodeAddress(String address) async {
+    final q = address.toLowerCase();
+    // Search streets first
+    for (final s in russianStreets) {
+      final full = '${s.street} ${s.city}'.toLowerCase();
+      if (q.contains(s.street.toLowerCase()) &&
+          q.contains(s.city.toLowerCase())) {
+        return LatLng(s.lat, s.lng);
+      }
+    }
+    // Then search cities
+    final local = russianCities.where((c) =>
+        q.contains(c.name.toLowerCase()) ||
+        q.contains(c.region.toLowerCase()));
+    if (local.isNotEmpty) {
+      return LatLng(local.first.lat, local.first.lng);
+    }
+    final results = await GeocoderService().search(address);
+    if (results.isNotEmpty) {
+      return results.first.position;
+    }
+    return null;
+  }
   @override
   Widget build(BuildContext context) {
     final favs = context.watch<FavoritesService>();
@@ -27,103 +52,127 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
 
     return Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      appBar: AppBar(
-        title: Text(
-          isRu ? 'Избранное' : 'Favorites',
-          style: TextStyle(
-            color: isDark ? AppTheme.darkText : AppTheme.lightText,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-        elevation: 0,
-        iconTheme: IconThemeData(
-          color: isDark ? AppTheme.darkText : AppTheme.lightText,
-        ),
-        actions: [
-          IconButton(
-            onPressed: () => _showAddDialog(context),
-            icon: const Icon(Icons.add_rounded, color: AppTheme.accent),
-          ),
-        ],
-      ),
-      body: favs.places.isEmpty
-          ? Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
+      body: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 16, 0),
+              child: Row(
                 children: [
-                  Icon(Icons.bookmark_border_rounded, size: 56, color: sub.withValues(alpha: 0.3)),
-                  const SizedBox(height: 12),
-                  Text(
-                    isRu ? 'Нет избранных мест' : 'No favorites yet',
-                    style: TextStyle(color: sub, fontSize: 15, fontWeight: FontWeight.w600),
+                  GestureDetector(
+                    onTap: () => Navigator.of(context).pop(),
+                    child: Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: isDark ? AppTheme.darkCard : const Color(0xFFF2F2F7),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(
+                        Icons.arrow_back_rounded,
+                        size: 22,
+                        color: isDark ? AppTheme.darkText : AppTheme.lightText,
+                      ),
+                    ),
                   ),
-                  const SizedBox(height: 6),
-                  Text(
-                    isRu
-                        ? 'Сохраните дом или работу,\nчтобы быстро добраться'
-                        : 'Save home or work\nto get there quickly',
-                    style: TextStyle(color: sub.withValues(alpha: 0.6), fontSize: 13),
-                    textAlign: TextAlign.center,
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      isRu ? 'Избранное' : 'Favorites',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                        color: isDark ? AppTheme.darkText : AppTheme.lightText,
+                      ),
+                    ),
                   ),
-                  const SizedBox(height: 16),
                   GestureDetector(
                     onTap: () => _showAddDialog(context),
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                      width: 40,
+                      height: 40,
                       decoration: BoxDecoration(
-                        color: AppTheme.accent,
-                        borderRadius: BorderRadius.circular(12),
+                        color: AppTheme.accent.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(10),
                       ),
-                      child: Text(
-                        isRu ? 'Добавить место' : 'Add place',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 14,
-                        ),
-                      ),
+                      child: const Icon(Icons.add_rounded, color: AppTheme.accent, size: 22),
                     ),
                   ),
                 ],
               ),
-            )
-          : ListView.separated(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-              itemCount: favs.places.length,
-              separatorBuilder: (_, _) => const SizedBox(height: 4),
-              itemBuilder: (context, i) {
-                final place = favs.places[i];
-                return _FavoriteCard(
-                  place: place,
-                  isDark: isDark,
-                  sub: sub,
-                  isRu: isRu,
-                  onNavigate: () {
-                    widget.onNavigate?.call(place.name, place.lat, place.lng);
-                    Navigator.of(context).pop();
-                  },
-                  onDelete: () => favs.remove(place.id),
-                );
-              },
             ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: favs.places.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.bookmark_border_rounded, size: 56, color: sub.withValues(alpha: 0.3)),
+                          const SizedBox(height: 12),
+                          Text(
+                            isRu ? 'Нет избранных мест' : 'No favorites yet',
+                            style: TextStyle(color: sub, fontSize: 15, fontWeight: FontWeight.w600),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            isRu
+                                ? 'Сохраните дом или работу,\nчтобы быстро добраться'
+                                : 'Save home or work\nto get there quickly',
+                            style: TextStyle(color: sub.withValues(alpha: 0.6), fontSize: 13),
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
+                      ),
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      itemCount: favs.places.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 8),
+                      itemBuilder: (context, i) {
+                        final place = favs.places[i];
+                        return _FavoriteCard(
+                          place: place,
+                          isDark: isDark,
+                          sub: sub,
+                          isRu: isRu,
+                          onNavigate: () {
+                            widget.onNavigate?.call(place.name, place.lat, place.lng);
+                            Navigator.of(context).pop();
+                          },
+                          onDelete: () => favs.remove(place.id),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
   void _showAddDialog(BuildContext context) {
     final nameCtrl = TextEditingController();
-    final latCtrl = TextEditingController();
-    final lngCtrl = TextEditingController();
+    final addressCtrl = TextEditingController();
     FavoriteIcon selectedIcon = FavoriteIcon.home;
     final settings = context.read<SettingsService>();
     final isRu = settings.language == AppLanguage.ru;
+    bool loading = false;
 
     showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
           backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-          title: Text(isRu ? 'Новое место' : 'New place'),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Text(
+            isRu ? 'Новое место' : 'New place',
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              color: Theme.of(context).brightness == Brightness.dark
+                  ? AppTheme.darkText : AppTheme.lightText,
+            ),
+          ),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -136,17 +185,13 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                 ),
                 const SizedBox(height: 12),
                 TextField(
-                  controller: latCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
-                  decoration: const InputDecoration(hintText: 'Широта (lat)'),
+                  controller: addressCtrl,
+                  decoration: InputDecoration(
+                    hintText: isRu ? 'Адрес (напр. ул. Пушкина 1)' : 'Address (e.g. 123 Main St)',
+                  ),
+                  maxLines: 2,
                 ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: lngCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
-                  decoration: const InputDecoration(hintText: 'Долгота (lng)'),
-                ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 16),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
@@ -170,20 +215,37 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
               child: Text(isRu ? 'Отмена' : 'Cancel'),
             ),
             FilledButton(
-              onPressed: () {
+              onPressed: loading ? null : () async {
                 final name = nameCtrl.text.trim();
-                final lat = double.tryParse(latCtrl.text.trim());
-                final lng = double.tryParse(lngCtrl.text.trim());
-                if (name.isEmpty || lat == null || lng == null) return;
+                final address = addressCtrl.text.trim();
+                if (name.isEmpty) return;
+
+                setDialogState(() => loading = true);
+
+                double lat = 55.7519;
+                double lng = 37.6178;
+
+                if (address.isNotEmpty) {
+                  final pos = await _geocodeAddress(address);
+                  if (pos != null) {
+                    lat = pos.latitude;
+                    lng = pos.longitude;
+                  }
+                }
+
+                if (!ctx.mounted) return;
                 context.read<FavoritesService>().add(
                       name: name,
+                      address: address,
                       lat: lat,
                       lng: lng,
                       icon: selectedIcon,
                     );
                 Navigator.pop(ctx);
               },
-              child: Text(isRu ? 'Сохранить' : 'Save'),
+              child: loading
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : Text(isRu ? 'Сохранить' : 'Save'),
             ),
           ],
         ),
@@ -238,6 +300,10 @@ class _FavoriteCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final displayAddress = place.address.isNotEmpty
+        ? place.address
+        : '${place.lat.toStringAsFixed(4)}, ${place.lng.toStringAsFixed(4)}';
+
     return Dismissible(
       key: ValueKey(place.id),
       direction: DismissDirection.endToStart,
@@ -288,8 +354,10 @@ class _FavoriteCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      '${place.lat.toStringAsFixed(4)}, ${place.lng.toStringAsFixed(4)}',
+                      displayAddress,
                       style: TextStyle(fontSize: 12, color: sub),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ],
                 ),
@@ -297,7 +365,9 @@ class _FavoriteCard extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
-                  color: AppTheme.accent,
+                  gradient: const LinearGradient(
+                    colors: [AppTheme.accent, Color(0xFF0055D4)],
+                  ),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Row(

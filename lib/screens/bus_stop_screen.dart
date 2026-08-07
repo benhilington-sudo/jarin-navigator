@@ -1,13 +1,9 @@
-import 'dart:math';
-
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../data/extra_bus_stops.dart';
 import '../data/russian_bus_stops.dart';
-import '../l10n/strings.dart';
 import '../services/rasp_service.dart';
-import '../services/rasp_scraper.dart';
 import '../services/settings_service.dart';
 import '../theme/app_theme.dart';
 
@@ -339,7 +335,7 @@ class BusStopScreen extends StatefulWidget {
   State<BusStopScreen> createState() => _BusStopScreenState();
 }
 
-class _BusStopScreenState extends State<BusStopScreen> with SingleTickerProviderStateMixin {
+class _BusStopScreenState extends State<BusStopScreen> {
   final _controller = TextEditingController();
   String _selectedCity = '';
   int _selectedTab = 0;
@@ -348,13 +344,12 @@ class _BusStopScreenState extends State<BusStopScreen> with SingleTickerProvider
   List<String> _cities = [];
   bool _showCityPicker = false;
 
-  // Яндекс Расписания
-  static const _raspApiKey = '7563729e-960d-44e9-8b80-4a17538f6200';
-  final RaspService _rasp = RaspService('7563729e-960d-44e9-8b80-4a17538f6200');
-  List<RaspStation> _raspStations = [];
-  List<RaspSchedule> _raspSchedule = [];
-  bool _raspLoading = false;
-  RaspStation? _selectedRaspStation;
+  final RaspService _raspService = RaspService('7563729e-960d-44e9-8b80-4a17538f6200');
+  List<RaspStation> _onlineStations = [];
+  List<RaspSchedule> _onlineSchedule = [];
+  String? _selectedStationCode;
+  bool _isLoadingOnline = false;
+  bool _isLoadingSchedule = false;
 
   static final _allStops = [...russianBusStops, ...extraBusStops];
 
@@ -376,7 +371,9 @@ class _BusStopScreenState extends State<BusStopScreen> with SingleTickerProvider
       setState(() {
         _stopResults = [];
         _routeResults = [];
-        _raspStations = [];
+        _onlineStations = [];
+        _onlineSchedule = [];
+        _selectedStationCode = null;
       });
       return;
     }
@@ -421,80 +418,57 @@ class _BusStopScreenState extends State<BusStopScreen> with SingleTickerProvider
         _routeResults = routeMap.values.toList();
       });
     } else {
-      _searchYandex(query);
+      _searchOnline(query);
     }
   }
 
-  Future<void> _searchYandex(String query) async {
+  Future<void> _searchOnline(String query) async {
+    if (query.trim().length < 2) return;
     setState(() {
-      _raspLoading = true;
-      _raspStations = [];
+      _isLoadingOnline = true;
+      _onlineStations = [];
+      _onlineSchedule = [];
+      _selectedStationCode = null;
     });
-
-    // 1. Try API first
-    var results = await _rasp.searchStations(query);
-
-    // 2. If no results, try scraper
-    if (results.isEmpty) {
-      final scraped = await RaspScraper.searchStations(query);
-      if (scraped.isNotEmpty) {
-        results = scraped.map((s) => RaspStation(
-          code: '',
-          name: s.name,
-          city: s.city,
-          region: '',
-          lat: s.lat,
-          lng: s.lng,
-          stationType: s.type,
-        )).toList();
+    try {
+      final stations = await _raspService.searchStations(query);
+      if (mounted) {
+        setState(() {
+          _onlineStations = stations;
+          _isLoadingOnline = false;
+        });
       }
-    }
-
-    // 3. If still nothing, try offline stops as last resort
-    if (results.isEmpty) {
-      final offlineResults = _allStops.where((stop) {
-        return stop.name.toLowerCase().contains(query.toLowerCase());
-      }).take(20).toList();
-      if (offlineResults.isNotEmpty) {
-        results = offlineResults.map((s) => RaspStation(
-          code: '',
-          name: s.name,
-          city: s.city,
-          region: s.district,
-          lat: s.lat,
-          lng: s.lng,
-          stationType: 'stop',
-        )).toList();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoadingOnline = false);
       }
-    }
-
-    if (mounted) {
-      setState(() {
-        _raspStations = results;
-        _raspLoading = false;
-      });
     }
   }
 
-  Future<void> _loadSchedule(RaspStation station) async {
+  Future<void> _loadSchedule(String stationCode) async {
     setState(() {
-      _selectedRaspStation = station;
-      _raspLoading = true;
-      _raspSchedule = [];
+      _isLoadingSchedule = true;
+      _onlineSchedule = [];
+      _selectedStationCode = stationCode;
     });
-    final schedule = await _rasp.getStationSchedule(station.code);
-    if (mounted) {
-      setState(() {
-        _raspSchedule = schedule;
-        _raspLoading = false;
-      });
+    try {
+      final schedule = await _raspService.getStationSchedule(stationCode);
+      if (mounted) {
+        setState(() {
+          _onlineSchedule = schedule;
+          _isLoadingSchedule = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoadingSchedule = false);
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<SettingsService>();
-    final s = settings.strings;
     final isRu = settings.language == AppLanguage.ru;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final sub = isDark ? AppTheme.darkSubtext : AppTheme.lightSubtext;
@@ -588,7 +562,7 @@ class _BusStopScreenState extends State<BusStopScreen> with SingleTickerProvider
                         dense: true,
                         title: Text(
                           isRu ? 'Все города' : 'All cities',
-                          style: TextStyle(color: AppTheme.accent, fontWeight: FontWeight.w600),
+                          style: const TextStyle(color: AppTheme.accent, fontWeight: FontWeight.w600),
                         ),
                         onTap: () {
                           setState(() {
@@ -724,11 +698,7 @@ class _BusStopScreenState extends State<BusStopScreen> with SingleTickerProvider
                   Expanded(
                     child: GestureDetector(
                       onTap: () {
-                        setState(() {
-                          _selectedTab = 2;
-                          _selectedRaspStation = null;
-                          _raspSchedule = [];
-                        });
+                        setState(() => _selectedTab = 2);
                         _search(_controller.text);
                       },
                       child: Container(
@@ -746,17 +716,17 @@ class _BusStopScreenState extends State<BusStopScreen> with SingleTickerProvider
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             Icon(
-                              Icons.cloud_download_rounded,
+                              Icons.schedule_rounded,
                               size: 18,
                               color: _selectedTab == 2
                                   ? AppTheme.accent
                                   : sub,
                             ),
-                            const SizedBox(width: 4),
+                            const SizedBox(width: 6),
                             Text(
-                              'Яндекс+',
+                              isRu ? 'Расписание' : 'Schedule',
                               style: TextStyle(
-                                fontSize: 13,
+                                fontSize: 14,
                                 fontWeight: _selectedTab == 2 ? FontWeight.w600 : FontWeight.w400,
                                 color: _selectedTab == 2
                                     ? AppTheme.accent
@@ -779,11 +749,11 @@ class _BusStopScreenState extends State<BusStopScreen> with SingleTickerProvider
                 textInputAction: TextInputAction.search,
                 onChanged: _search,
                 decoration: InputDecoration(
-                  hintText: _selectedTab == 0
-                      ? (isRu ? 'Поиск остановки…' : 'Search stop…')
-                      : _selectedTab == 1
-                          ? (isRu ? 'Номер маршрута (напр. 1, 15, М1)…' : 'Route number (e.g. 1, 15, M1)…')
-                          : (isRu ? 'Поиск станции Яндекс…' : 'Search Yandex station…'),
+                hintText: _selectedTab == 0
+                    ? (isRu ? 'Поиск остановки…' : 'Search stop…')
+                    : _selectedTab == 1
+                        ? (isRu ? 'Номер маршрута (напр. 1, 15, М1)…' : 'Route number (e.g. 1, 15, M1)…')
+                        : (isRu ? 'Название остановки или города…' : 'Stop or city name…'),
                   prefixIcon: const Icon(Icons.search_rounded, size: 22),
                   suffixIcon: _controller.text.isNotEmpty
                       ? IconButton(
@@ -800,13 +770,13 @@ class _BusStopScreenState extends State<BusStopScreen> with SingleTickerProvider
             Expanded(
               child: _selectedTab == 0
                   ? (_stopResults.isEmpty
-                      ? _buildEmpty(sub, s, isRu)
+                      ? _buildEmpty(sub, isRu)
                       : _buildStopResults(isDark, sub, isRu))
                   : _selectedTab == 1
                       ? (_routeResults.isEmpty
-                          ? _buildEmptyRoutes(sub, s, isRu)
+                          ? _buildEmptyRoutes(sub, isRu)
                           : _buildRouteResults(isDark, sub, isRu))
-                      : _buildYandexResults(isDark, sub, isRu),
+                      : _buildOnlineTab(isDark, sub, isRu),
             ),
           ],
         ),
@@ -814,7 +784,7 @@ class _BusStopScreenState extends State<BusStopScreen> with SingleTickerProvider
     );
   }
 
-  Widget _buildEmpty(Color sub, Strings s, bool isRu) {
+  Widget _buildEmpty(Color sub, bool isRu) {
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -835,7 +805,7 @@ class _BusStopScreenState extends State<BusStopScreen> with SingleTickerProvider
     );
   }
 
-  Widget _buildEmptyRoutes(Color sub, Strings s, bool isRu) {
+  Widget _buildEmptyRoutes(Color sub, bool isRu) {
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -885,78 +855,66 @@ class _BusStopScreenState extends State<BusStopScreen> with SingleTickerProvider
     );
   }
 
-  Widget _buildYandexResults(bool isDark, Color sub, bool isRu) {
-    if (_raspLoading) {
-      return const Center(
-        child: Padding(
-          padding: EdgeInsets.all(32),
-          child: CircularProgressIndicator(strokeWidth: 2),
-        ),
-      );
+  Widget _buildOnlineTab(bool isDark, Color sub, bool isRu) {
+    if (_isLoadingOnline) {
+      return const Center(child: CircularProgressIndicator(color: AppTheme.accent));
     }
 
-    // Если выбрана станция — показываем расписание
-    if (_selectedRaspStation != null) {
-      return _buildScheduleList(isDark, sub, isRu);
+    if (_selectedStationCode != null) {
+      return _buildScheduleView(isDark, sub, isRu);
     }
 
-    // Иначе — список найденных станций
-    if (_raspStations.isEmpty) {
+    if (_onlineStations.isEmpty) {
       return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.search_rounded, size: 56, color: sub.withValues(alpha: 0.3)),
-              const SizedBox(height: 12),
-              Text(
-                isRu ? 'Поиск остановок и маршрутов' : 'Search stops and routes',
-                style: TextStyle(color: sub, fontSize: 15, fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                isRu
-                    ? 'Введите название остановки или номер маршрута.\nРаботает из Яндекс Расписаний, парсера или локальной базы.'
-                    : 'Enter stop name or route number.\nWorks from Yandex Schedule, parser, or local database.',
-                style: TextStyle(color: sub.withValues(alpha: 0.6), fontSize: 13),
-                textAlign: TextAlign.center,
-              ),
-            ],
-          ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.schedule_rounded, size: 56, color: sub.withValues(alpha: 0.3)),
+            const SizedBox(height: 12),
+            Text(
+              isRu ? 'Расписание онлайн' : 'Online schedule',
+              style: TextStyle(color: sub, fontSize: 15, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              isRu ? 'Введите название остановки\nили города для поиска' : 'Enter stop or city name\nto search',
+              style: TextStyle(color: sub.withValues(alpha: 0.6), fontSize: 13),
+              textAlign: TextAlign.center,
+            ),
+          ],
         ),
       );
     }
 
     return ListView.separated(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-      itemCount: _raspStations.length,
+      itemCount: _onlineStations.length,
       separatorBuilder: (_, _) => const SizedBox(height: 4),
       itemBuilder: (context, i) {
-        final station = _raspStations[i];
+        final station = _onlineStations[i];
         return GestureDetector(
-          onTap: () => _loadSchedule(station),
+          onTap: () => _loadSchedule(station.code),
           child: Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
               color: isDark ? AppTheme.darkCard : AppTheme.lightCard,
               borderRadius: BorderRadius.circular(14),
               border: Border.all(
-                color: AppTheme.accent.withValues(alpha: 0.3),
+                color: isDark ? AppTheme.darkBorder : AppTheme.lightBorder,
               ),
             ),
             child: Row(
               children: [
                 Container(
-                  width: 36,
-                  height: 36,
+                  width: 40,
+                  height: 40,
                   decoration: BoxDecoration(
                     color: AppTheme.accent.withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: const Icon(Icons.cloud_download_rounded, color: AppTheme.accent, size: 20),
+                  child: const Icon(Icons.train_rounded, color: AppTheme.accent, size: 22),
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -973,15 +931,13 @@ class _BusStopScreenState extends State<BusStopScreen> with SingleTickerProvider
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        '${station.city.isNotEmpty ? station.city : station.region} • ${station.stationType}',
+                        station.city.isNotEmpty ? '${station.city} • ${station.stationType}' : station.stationType,
                         style: TextStyle(fontSize: 12, color: sub),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
                       ),
                     ],
                   ),
                 ),
-                Icon(Icons.chevron_right_rounded, color: sub, size: 20),
+                Icon(Icons.chevron_right_rounded, color: sub, size: 22),
               ],
             ),
           ),
@@ -990,122 +946,213 @@ class _BusStopScreenState extends State<BusStopScreen> with SingleTickerProvider
     );
   }
 
-  Widget _buildScheduleList(bool isDark, Color sub, bool isRu) {
-    final station = _selectedRaspStation!;
+  Widget _buildScheduleView(bool isDark, Color sub, bool isRu) {
+    if (_isLoadingSchedule) {
+      return Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                GestureDetector(
+                  onTap: () => setState(() {
+                    _selectedStationCode = null;
+                    _onlineSchedule = [];
+                  }),
+                  child: Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: isDark ? AppTheme.darkCard : const Color(0xFFF2F2F7),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(Icons.arrow_back_rounded, size: 22, color: isDark ? AppTheme.darkText : AppTheme.lightText),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Text(
+                  isRu ? 'Расписание' : 'Schedule',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: isDark ? AppTheme.darkText : AppTheme.lightText),
+                ),
+              ],
+            ),
+          ),
+          const Expanded(child: Center(child: CircularProgressIndicator(color: AppTheme.accent))),
+        ],
+      );
+    }
+
+    if (_onlineSchedule.isEmpty) {
+      return Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                GestureDetector(
+                  onTap: () => setState(() {
+                    _selectedStationCode = null;
+                    _onlineSchedule = [];
+                  }),
+                  child: Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: isDark ? AppTheme.darkCard : const Color(0xFFF2F2F7),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(Icons.arrow_back_rounded, size: 22, color: isDark ? AppTheme.darkText : AppTheme.lightText),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Text(
+                  isRu ? 'Расписание' : 'Schedule',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: isDark ? AppTheme.darkText : AppTheme.lightText),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.event_busy_rounded, size: 48, color: sub.withValues(alpha: 0.3)),
+                  const SizedBox(height: 12),
+                  Text(
+                    isRu ? 'Нет данных расписания' : 'No schedule data',
+                    style: TextStyle(color: sub, fontSize: 15),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
     return Column(
       children: [
-        // Шапка станции
-        Container(
-          margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: AppTheme.accent.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(14),
-          ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
           child: Row(
             children: [
               GestureDetector(
                 onTap: () => setState(() {
-                  _selectedRaspStation = null;
-                  _raspSchedule = [];
+                  _selectedStationCode = null;
+                  _onlineSchedule = [];
                 }),
-                child: const Icon(Icons.arrow_back_rounded, color: AppTheme.accent, size: 22),
+                child: Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: isDark ? AppTheme.darkCard : const Color(0xFFF2F2F7),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(Icons.arrow_back_rounded, size: 22, color: isDark ? AppTheme.darkText : AppTheme.lightText),
+                ),
               ),
-              const SizedBox(width: 10),
+              const SizedBox(width: 12),
               Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      station.name,
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700,
-                        color: isDark ? AppTheme.darkText : AppTheme.lightText,
-                      ),
-                    ),
-                    Text(
-                      station.city.isNotEmpty ? station.city : station.region,
-                      style: TextStyle(fontSize: 12, color: sub),
-                    ),
-                  ],
+                child: Text(
+                  isRu ? 'Отправления' : 'Departures',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: isDark ? AppTheme.darkText : AppTheme.lightText),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: AppTheme.accent.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  '${_onlineSchedule.length}',
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.accent),
                 ),
               ),
             ],
           ),
         ),
         const SizedBox(height: 8),
-        // Список расписания
         Expanded(
-          child: _raspSchedule.isEmpty
-              ? Center(
-                  child: Text(
-                    isRu ? 'Нет данных о расписании' : 'No schedule data',
-                    style: TextStyle(color: sub),
+          child: ListView.separated(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            itemCount: _onlineSchedule.length,
+            separatorBuilder: (_, _) => const SizedBox(height: 4),
+            itemBuilder: (context, i) {
+              final s = _onlineSchedule[i];
+              return Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: isDark ? AppTheme.darkCard : AppTheme.lightCard,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: isDark ? AppTheme.darkBorder : AppTheme.lightBorder,
                   ),
-                )
-              : ListView.separated(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                  itemCount: _raspSchedule.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: 4),
-                  itemBuilder: (context, i) {
-                    final s = _raspSchedule[i];
-                    return Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: isDark ? AppTheme.darkCard : AppTheme.lightCard,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: isDark ? AppTheme.darkBorder : AppTheme.lightBorder,
-                        ),
-                      ),
-                      child: Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: AppTheme.accent.withValues(alpha: 0.12),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Text(
-                              s.direction.length > 20
-                                  ? '${s.direction.substring(0, 20)}…'
-                                  : s.direction,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w700,
-                                fontSize: 12,
-                                color: AppTheme.accent,
-                              ),
-                              maxLines: 1,
-                            ),
+                ),
+                child: Row(
+                  children: [
+                    Column(
+                      children: [
+                        Text(
+                          s.departure,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                            color: isDark ? AppTheme.darkText : AppTheme.lightText,
                           ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  '${s.departure} → ${s.arrival}',
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
-                                    color: isDark ? AppTheme.darkText : AppTheme.lightText,
-                                  ),
-                                ),
-                                Text(
-                                  s.carrier,
-                                  style: TextStyle(fontSize: 11, color: sub),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
-                            ),
+                        ),
+                        if (s.arrival.isNotEmpty) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            '→ ${s.arrival}',
+                            style: TextStyle(fontSize: 12, color: sub),
                           ),
                         ],
+                      ],
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            s.direction.isNotEmpty ? s.direction : (isRu ? 'Без направления' : 'No direction'),
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: isDark ? AppTheme.darkText : AppTheme.lightText,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          if (s.carrier.isNotEmpty) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              s.carrier,
+                              style: TextStyle(fontSize: 12, color: sub),
+                            ),
+                          ],
+                        ],
                       ),
-                    );
-                  },
+                    ),
+                    if (s.duration > 0)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: AppTheme.accent.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          '${s.duration ~/ 60}ч ${s.duration % 60}м',
+                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.accent),
+                        ),
+                      ),
+                  ],
                 ),
+              );
+            },
+          ),
         ),
       ],
     );
