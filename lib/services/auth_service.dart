@@ -1,8 +1,9 @@
 import 'dart:async';
 
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import 'package:google_sign_in/google_sign_in.dart';
+
+import 'auth_service_stub.dart'
+    if (dart.library.io) 'auth_service_native.dart' as impl;
 
 class AuthUser {
   final String uid;
@@ -18,128 +19,23 @@ class AuthUser {
     this.photoUrl,
     this.emailVerified = false,
   });
-
-  factory AuthUser.fromFirebase(User u) => AuthUser(
-        uid: u.uid,
-        email: u.email,
-        displayName: u.displayName,
-        photoUrl: u.photoURL,
-        emailVerified: u.emailVerified,
-      );
 }
 
 class AuthService extends ChangeNotifier {
-  FirebaseAuth? _auth;
-  GoogleSignIn? _google;
-  AuthUser? _user;
-  StreamSubscription? _sub;
+  late final impl.AuthServiceImpl _impl;
 
-  AuthUser? get user => _user;
-  bool get isLoggedIn => _user != null;
+  AuthUser? get user => _impl.user;
+  bool get isLoggedIn => _impl.isLoggedIn;
 
   AuthService() {
-    try {
-      _auth = FirebaseAuth.instance;
-      _google = GoogleSignIn(
-        clientId: '582814618971-n2ggsm027ovc23f7arh65csl0t63nk1j.apps.googleusercontent.com',
-      );
-      _sub = _auth!.authStateChanges().listen((u) {
-        _user = u != null ? AuthUser.fromFirebase(u) : null;
-        notifyListeners();
-      });
-    } catch (e) {
-      debugPrint('AuthService init error: $e');
-    }
+    _impl = impl.createAuthServiceImpl();
+    _impl.addListener(notifyListeners);
   }
 
-  /// Google Sign-In
-  Future<String?> signInWithGoogle() async {
-    if (_auth == null || _google == null) return 'Firebase не инициализирован';
-    try {
-      final account = await _google!.signIn();
-      if (account == null) return 'Отменено пользователем';
-      final auth = await account.authentication;
-      final credential = GoogleAuthProvider.credential(
-        accessToken: auth.accessToken,
-        idToken: auth.idToken,
-      );
-      await _auth!.signInWithCredential(credential);
-      return null; // success
-    } catch (e) {
-      debugPrint('Google sign-in error: $e');
-      return 'Войдите через email — Google Sign-In ещё не настроен';
-    }
-  }
-
-  /// Email + Password Login
-  Future<String?> signInWithEmail(String email, String password) async {
-    if (_auth == null) return 'Firebase не инициализирован';
-    try {
-      await _auth!.signInWithEmailAndPassword(
-        email: email,
-        password: password,
-      );
-      return null;
-    } on FirebaseAuthException catch (e) {
-      if (e.code == 'user-not-found') return 'Пользователь не найден';
-      if (e.code == 'wrong-password') return 'Неверный пароль';
-      if (e.code == 'invalid-email') return 'Некорректный email';
-      if (e.code == 'user-disabled') return 'Аккаунт заблокирован';
-      return 'Ошибка входа: ${e.message}';
-    } catch (e) {
-      return 'Ошибка входа';
-    }
-  }
-
-  /// Email + Password Registration
-  Future<String?> registerWithEmail(String email, String password, {String? name}) async {
-    if (_auth == null) return 'Firebase не инициализирован';
-    try {
-      final cred = await _auth!.createUserWithEmailAndPassword(
-        email: email,
-        password: password,
-      );
-      if (name != null && name.isNotEmpty) {
-        await cred.user?.updateDisplayName(name);
-      }
-      await cred.user?.sendEmailVerification();
-      return null;
-    } on FirebaseAuthException catch (e) {
-      if (e.code == 'email-already-in-use') return 'Этот email уже зарегистрирован';
-      if (e.code == 'invalid-email') return 'Некорректный email';
-      if (e.code == 'weak-password') return 'Слишком слабый пароль';
-      return 'Ошибка регистрации: ${e.message}';
-    } catch (e) {
-      return 'Ошибка регистрации';
-    }
-  }
-
-  /// Send email verification
-  Future<void> sendVerification() async {
-    await _auth?.currentUser?.sendEmailVerification();
-  }
-
-  /// Reload user to check emailVerified
-  Future<bool> reloadAndCheckEmailVerified() async {
-    await _auth?.currentUser?.reload();
-    final u = _auth?.currentUser;
-    if (u != null) {
-      _user = AuthUser.fromFirebase(u);
-      notifyListeners();
-      return u.emailVerified;
-    }
-    return false;
-  }
-
-  /// Sign out
-  Future<void> signOut() async {
-    await _google?.signOut();
-    await _auth?.signOut();
-  }
-
-  @override
-  void dispose() {
-    _sub?.cancel();
-    super.dispose();
-  }
+  Future<String?> signInWithGoogle() => _impl.signInWithGoogle();
+  Future<String?> signInWithEmail(String email, String password) => _impl.signInWithEmail(email, password);
+  Future<String?> registerWithEmail(String email, String password, {String? name}) => _impl.registerWithEmail(email, password, name: name);
+  Future<void> sendVerification() => _impl.sendVerification();
+  Future<bool> reloadAndCheckEmailVerified() => _impl.reloadAndCheckEmailVerified();
+  Future<void> signOut() => _impl.signOut();
 }
