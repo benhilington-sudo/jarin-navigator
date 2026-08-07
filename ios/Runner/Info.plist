@@ -30,6 +30,8 @@
 	<string>Jarin использует ваше местоположение для навигации, отображения скорости и камер на карте.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>Jarin использует ваше местоположение для навигации, отображения скорости и камер на карте.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Jarin использует микрофон для голосовых подсказок.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -1,9 +1,6 @@
-import 'dart:js_interop';
-
 import 'package:flutter/foundation.dart';
 
-@JS('jarinPlayAudio')
-external void _jarinPlayAudio(String path);
+import 'tts_web.dart' if (dart.library.io) 'tts_stub.dart';
 
 class TtsService {
   final dynamic settings;
@@ -20,17 +17,17 @@ class TtsService {
           lower.contains('good road') ||
           lower.contains('nice trip')) {
         debugPrint('TTS -> voice_welcome');
-        _jarinPlayAudio('assets/voice/voice_welcome.mp3');
+        playAudio('assets/voice/voice_welcome.mp3');
       } else if (lower.contains('направо') ||
           lower.contains('turn right') ||
           lower.contains('поверните направо')) {
         debugPrint('TTS -> voice_turn_right');
-        _jarinPlayAudio('assets/voice/voice_turn_right.mp3');
+        playAudio('assets/voice/voice_turn_right.mp3');
       } else if (lower.contains('налево') ||
           lower.contains('turn left') ||
           lower.contains('поверните налево')) {
         debugPrint('TTS -> voice_turn_left');
-        _jarinPlayAudio('assets/voice/voice_turn_left.mp3');
+        playAudio('assets/voice/voice_turn_left.mp3');
       } else {
         debugPrint('TTS -> no match for: $text');
       }
