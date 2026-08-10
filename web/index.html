@@ -14,7 +14,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="theme-color" content="#1a1a2e">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="apple-touch-fullscreen" content="yes">
 
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
@@ -33,9 +33,6 @@
       background: #1a1a2e;
       overflow: hidden;
     }
-    @supports (padding-top: env(safe-area-inset-top)) {
-      body { padding-top: env(safe-area-inset-top); }
-    }
   </style>
 </head>
 <body>
@@ -45,14 +42,6 @@
       a.volume = 1.0;
       a.play().catch(function(e) {
         console.log('Audio error:', path, e);
-      });
-    }
-
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', function() {
-        navigator.serviceWorker.register('/service-worker.js')
-          .then(function(r) { console.log('SW registered:', r.scope); })
-          .catch(function(e) { console.log('SW error:', e); });
       });
     }
   </script>

@@ -21,8 +21,20 @@ class AuthUser {
   });
 }
 
+abstract class AuthServiceImpl extends ChangeNotifier {
+  AuthUser? get user;
+  bool get isLoggedIn;
+  Future<String?> signInWithGoogle();
+  Future<String?> signInWithEmail(String email, String password);
+  Future<String?> registerWithEmail(String email, String password,
+      {String? name});
+  Future<void> sendVerification();
+  Future<bool> reloadAndCheckEmailVerified();
+  Future<void> signOut();
+}
+
 class AuthService extends ChangeNotifier {
-  late final impl.AuthServiceImpl _impl;
+  late final AuthServiceImpl _impl;
 
   AuthUser? get user => _impl.user;
   bool get isLoggedIn => _impl.isLoggedIn;

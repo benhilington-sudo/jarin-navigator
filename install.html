@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Установить Jarin Навигатор</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(160deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%);
+      color: #eaeaea;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 24px;
+      padding: 32px 28px;
+      max-width: 420px;
+      width: 100%;
+      text-align: center;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    }
+    .logo {
+      font-size: 42px;
+      font-weight: 900;
+      letter-spacing: 2px;
+      background: linear-gradient(90deg, #00E676, #00BCD4);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    h1 { font-size: 22px; margin: 8px 0 4px; font-weight: 700; }
+    p.sub { color: #aab; font-size: 14px; margin-bottom: 24px; }
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 16px;
+      border: none;
+      border-radius: 14px;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      margin-top: 12px;
+    }
+    .btn-android {
+      background: linear-gradient(90deg, #00E676, #00BCD4);
+      color: #062;
+    }
+    .btn-ios {
+      background: rgba(255,255,255,0.12);
+      color: #fff;
+      border: 1px solid rgba(255,255,255,0.2);
+    }
+    .hidden { display: none !important; }
+    .steps {
+      text-align: left;
+      margin-top: 16px;
+      background: rgba(0,0,0,0.25);
+      border-radius: 14px;
+      padding: 16px 18px;
+      font-size: 14px;
+      line-height: 1.7;
+    }
+    .steps b { color: #00E676; }
+    .qr {
+      margin: 20px auto 0;
+      width: 200px;
+      height: 200px;
+      background: #fff;
+      border-radius: 16px;
+      padding: 10px;
+      display: none;
+    }
+    .qr img { width: 100%; height: 100%; }
+    .qr-cap { font-size: 13px; color: #99a; margin-top: 8px; }
+    .note { margin-top: 18px; font-size: 12px; color: #889; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">JARIN</div>
+    <h1>Навигатор</h1>
+    <p class="sub">GPS-навигатор с голосом друга</p>
+
+    <div id="androidBox">
+      <a class="btn btn-android" href="/apk/jarin.apk">&#128241; Скачать APK для Android</a>
+      <p class="note">Android 8+ · Разрешите установку из неизвестных источников</p>
+    </div>
+
+    <div id="iosBox" class="hidden">
+      <div class="steps">
+        <b>1.</b> Нажми кнопку <b>«Поделиться»</b> (&#9650; внизу Safari)<br>
+        <b>2.</b> Выбери <b>«На экран „Домой"»</b><br>
+        <b>3.</b> Открой Jarin с домашнего экрана<br>
+        <b>4.</b> Далее запускай как обычное приложение
+      </div>
+      <a class="btn btn-ios" href="/">Открыть Jarin в браузере</a>
+    </div>
+
+    <div id="otherBox" class="hidden">
+      <p class="sub">Отсканируй QR-код с телефона:</p>
+      <div class="qr" id="qrImg"><img src="/qr.png" alt="QR"></div>
+      <p class="qr-cap">или открой <b>2.26.51.104</b> прямо в браузере</p>
+    </div>
+  </div>
+
+  <script>
+    var ua = navigator.userAgent;
+    var isAndroid = /Android/i.test(ua);
+    var isIOS = /iPhone|iPad|iPod/i.test(ua);
+    if (isAndroid) {
+      document.getElementById('androidBox').style.display = 'block';
+    } else if (isIOS) {
+      document.getElementById('iosBox').classList.remove('hidden');
+    } else {
+      document.getElementById('otherBox').classList.remove('hidden');
+      document.getElementById('qrImg').style.display = 'block';
+    }
+  </script>
+</body>
+</html>

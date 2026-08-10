@@ -1,6 +1,7 @@
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 
 import '../services/location_service.dart';
@@ -53,6 +54,13 @@ class _MapScreenState extends State<MapScreen> {
   double _zoom = 4;
   bool _following = true;
 
+  // Кэши слоёв маршрута (пересоздаём только при смене маршрута, не каждый тик)
+  List<RouteOption>? _cacheSelOptions;
+  int _cacheSelIndex = -1;
+  Widget? _cacheSelectingLayer;
+  List<LatLng>? _cacheActivePts;
+  Widget? _cacheActiveLayer;
+
   @override
   void initState() {
     super.initState();
@@ -82,10 +90,33 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   void _onPositionChanged(MapCamera camera, bool hasGesture) {
-    if (hasGesture) {
+    if (hasGesture && !_isNavActive(context)) {
       _following = false;
     }
     _zoom = camera.zoom;
+  }
+
+  bool _isNavActive(BuildContext context) =>
+      context.read<NavigationEngine>().isActive;
+
+  // Следование за пользователем: двигаем камеру, только если
+  // пользователь ушёл от центра экрана дальше порога (~18% меньшей стороны).
+  void _followIfNeeded(NavigationEngine engine) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final cam = _mapController.camera;
+      if (cam == null) return;
+      final userPixel = cam.latLngToScreenOffset(engine.position);
+      final centerPixel = Offset(cam.size.width / 2, cam.size.height / 2);
+      final dist = (userPixel - centerPixel).distance;
+      final threshold = cam.size.shortestSide * 0.18;
+      if (dist > threshold) {
+        final z = engine.isActive
+            ? (_zoom < 14 ? 17.0 : _zoom)
+            : (_zoom < 12 ? 16.0 : _zoom);
+        _mapController.moveAndRotate(engine.position, z, engine.heading);
+      }
+    });
   }
 
   @override
@@ -95,13 +126,8 @@ class _MapScreenState extends State<MapScreen> {
     final isDark = settings.themeMode == ThemeMode.dark;
     final isRu = settings.language == AppLanguage.ru;
 
-    if (_following) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _following) {
-          final z = engine.isActive ? (_zoom < 14 ? 17.0 : _zoom) : (_zoom < 12 ? 16.0 : _zoom);
-          _mapController.moveAndRotate(engine.position, z, engine.heading);
-        }
-      });
+    if (_following || engine.isActive) {
+      _followIfNeeded(engine);
     }
 
     final tileUrl = isDark
@@ -320,66 +346,89 @@ class _MapScreenState extends State<MapScreen> {
 
   Widget _buildRouteLayer(NavigationEngine engine) {
     if (engine.isSelecting && engine.routeOptions.isNotEmpty) {
-      return Stack(
-        children: [
-          for (var i = 0; i < engine.routeOptions.length; i++)
-            PolylineLayer(
-              polylines: [
-                Polyline(
-                  points: engine.routeOptions[i].polyline,
-                  strokeWidth: i == engine.selectedRouteIndex ? 5 : 3,
-                  color: i == engine.selectedRouteIndex
-                      ? AppTheme.accent
-                      : AppTheme.accent.withValues(alpha: 0.3),
-                ),
-              ],
-            ),
-        ],
-      );
+      if (_cacheSelectingLayer == null ||
+          _cacheSelOptions != engine.routeOptions ||
+          _cacheSelIndex != engine.selectedRouteIndex) {
+        _cacheSelOptions = engine.routeOptions;
+        _cacheSelIndex = engine.selectedRouteIndex;
+        _cacheSelectingLayer = Stack(
+          children: [
+            for (var i = 0; i < engine.routeOptions.length; i++)
+              PolylineLayer(
+                polylines: [
+                  Polyline(
+                    points: engine.routeOptions[i].polyline,
+                    strokeWidth: i == engine.selectedRouteIndex ? 5 : 3,
+                    color: i == engine.selectedRouteIndex
+                        ? AppTheme.accent
+                        : AppTheme.accent.withValues(alpha: 0.3),
+                  ),
+                ],
+              ),
+          ],
+        );
+      }
+      return _cacheSelectingLayer!;
     }
 
     if (engine.isActive && engine.activePolyline.isNotEmpty) {
       final pts = engine.activePolyline;
-      final count = pts.length;
-      if (count < 2) return const SizedBox.shrink();
+      if (_cacheActiveLayer == null || !identical(pts, _cacheActivePts)) {
+        _cacheActivePts = pts;
+        _cacheActiveLayer = _buildActivePolyline(pts);
+      }
+      return _cacheActiveLayer!;
+    }
 
-      return PolylineLayer(
-        polylines: [
-          // Outer glow
-          Polyline(
-            points: pts,
-            strokeWidth: 16,
-            color: const Color(0xFF00E676).withValues(alpha: 0.12),
-          ),
-          // Shadow
-          Polyline(
-            points: pts,
-            strokeWidth: 10,
-            color: const Color(0xFF00C853).withValues(alpha: 0.2),
-          ),
-          // Main gradient
-          for (var i = 0; i < count - 1; i++)
-            Polyline(
-              points: [pts[i], pts[i + 1]],
-              strokeWidth: 7,
-              color: Color.lerp(
-                const Color(0xFF00E676),
-                const Color(0xFF00BCD4),
-                count > 1 ? i / (count - 1) : 0,
-              )!,
-            ),
-          // White center highlight
-          for (var i = 0; i < count - 1; i++)
-            Polyline(
-              points: [pts[i], pts[i + 1]],
-              strokeWidth: 2,
-              color: Colors.white.withValues(alpha: 0.5),
-            ),
-        ],
-      );
+    // Сброс кэшей при смене режима
+    if (_cacheSelectingLayer != null || _cacheActiveLayer != null) {
+      _cacheSelectingLayer = null;
+      _cacheActiveLayer = null;
+      _cacheSelOptions = null;
+      _cacheActivePts = null;
     }
 
     return const SizedBox.shrink();
+  }
+
+  Widget _buildActivePolyline(List<LatLng> pts) {
+    final count = pts.length;
+    if (count < 2) return const SizedBox.shrink();
+
+    return PolylineLayer(
+      polylines: [
+        // Outer glow
+        Polyline(
+          points: pts,
+          strokeWidth: 16,
+          color: const Color(0xFF00E676).withValues(alpha: 0.12),
+        ),
+        // Shadow
+        Polyline(
+          points: pts,
+          strokeWidth: 10,
+          color: const Color(0xFF00C853).withValues(alpha: 0.2),
+        ),
+        // Main gradient
+        for (var i = 0; i < count - 1; i++)
+          Polyline(
+            points: [pts[i], pts[i + 1]],
+            strokeWidth: 7,
+            color: Color.lerp(
+              const Color(0xFF00E676),
+              const Color(0xFF00BCD4),
+              count > 1 ? i / (count - 1) : 0,
+            )!,
+          ),
+        // White center highlight
+        for (var i = 0; i < count - 1; i++)
+          Polyline(
+            points: [pts[i], pts[i + 1]],
+            strokeWidth: 2,
+            color: Colors.white.withValues(alpha: 0.5),
+          ),
+      ],
+    );
   }
 }
 

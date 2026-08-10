@@ -143,6 +143,6 @@ class CORSHandler(http.server.SimpleHTTPRequestHandler):
 
 
 if __name__ == '__main__':
-    server = http.server.HTTPServer(('127.0.0.1', PORT), CORSHandler)
+    server = http.server.HTTPServer(('0.0.0.0', PORT), CORSHandler)
     print(f'Server running on http://127.0.0.1:{PORT}')
     server.serve_forever()

@@ -9,6 +9,7 @@ import 'screens/main_shell.dart';
 import 'screens/welcome_screen.dart';
 import 'services/auth_service.dart';
 import 'services/favorites_service.dart';
+import 'services/location_service.dart';
 import 'services/navigation_engine.dart';
 import 'services/settings_service.dart';
 import 'services/shift_report_service.dart';
@@ -28,11 +29,26 @@ class JarinApp extends StatefulWidget {
 class _JarinAppState extends State<JarinApp> {
   bool _locationGranted = false;
   bool _checking = true;
+  final _location = LocationService();
 
   @override
   void initState() {
     super.initState();
     _checkLocation();
+  }
+
+  @override
+  void dispose() {
+    _location.stopTracking();
+    super.dispose();
+  }
+
+  void _startLiveTracking() {
+    _location.startTracking((p) {
+      if (mounted) {
+        context.read<NavigationEngine>().setGpsPosition(p);
+      }
+    });
   }
 
   Future<void> _checkLocation() async {
@@ -53,6 +69,7 @@ class _JarinAppState extends State<JarinApp> {
               _locationGranted = true;
               _checking = false;
             });
+            _startLiveTracking();
           }
         } catch (_) {
           setState(() {
@@ -97,6 +114,7 @@ class _JarinAppState extends State<JarinApp> {
           _locationGranted = true;
           _checking = false;
         });
+        _startLiveTracking();
       } else {
         setState(() {
           _locationGranted = true;

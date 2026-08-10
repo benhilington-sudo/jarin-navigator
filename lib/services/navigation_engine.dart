@@ -98,6 +98,7 @@ class NavigationEngine extends ChangeNotifier {
   double _heading = 0;
   double _speedKmh = 0;
   double _targetSpeed = 0;
+  DateTime? _lastLiveGpsAt;
 
   NavState _state = NavState.idle;
   List<RouteOption> _routeOptions = [];
@@ -195,6 +196,7 @@ class NavigationEngine extends ChangeNotifier {
     _gpsPosition = point;
     _gpsAvailable = true;
     _position = point;
+    _lastLiveGpsAt = DateTime.now();
 
     // Если навигация активна, но таймер не запущен — запускаем
     if (_state == NavState.navigating && _timer == null) {
@@ -347,6 +349,36 @@ class NavigationEngine extends ChangeNotifier {
   void _tick() {
     if (_state != NavState.navigating || _steps.isEmpty) return;
 
+    // Живой GPS: определяем текущий шаг по реальной позиции
+    final live = _lastLiveGpsAt != null &&
+        DateTime.now().difference(_lastLiveGpsAt!) < const Duration(seconds: 4);
+
+    if (live) {
+      final dist = const Distance();
+      while (_stepIndex < _steps.length) {
+        final st = _steps[_stepIndex];
+        final d = dist.as(LengthUnit.Meter, _position, st.to);
+        if (d < 20) {
+          _stepIndex++;
+          _distanceInStep = 0;
+        } else {
+          break;
+        }
+      }
+      final step = currentStep;
+      if (step == null) {
+        _finish();
+        return;
+      }
+      final rem = dist.as(LengthUnit.Meter, _position, step.to);
+      _distanceInStep = max(0.0, step.distanceMeters - rem);
+      _announceStep(step, rem);
+      _heading = _bearing(_position, step.to);
+      notifyListeners();
+      return;
+    }
+
+    // Симуляция (нет свежих GPS-данных)
     final target = _targetSpeed;
     _speedKmh += (target - _speedKmh) * 0.25;
     if (_speedKmh < 0) _speedKmh = 0;
@@ -361,21 +393,7 @@ class NavigationEngine extends ChangeNotifier {
     _distanceInStep += metersPerSec;
 
     final stepRemaining = step.distanceMeters - _distanceInStep;
-
-    final s = settings.strings;
-    if (step.turn != TurnType.straight &&
-        step.turn != TurnType.arrive &&
-        step.turn != TurnType.depart &&
-        step.turn != TurnType.merge) {
-      final key = '$_stepIndex';
-      if (!_announced.contains(key) && stepRemaining <= 300) {
-        _announced.add(key);
-        final street = step.streetName.isNotEmpty ? step.streetName : '';
-        final dir = step.turn == TurnType.turnRight ? s.turnRight : s.turnLeft;
-        final msg = street.isNotEmpty ? '$dir, $street' : dir;
-        tts.speak(msg);
-      }
-    }
+    _announceStep(step, stepRemaining);
 
     if (_distanceInStep >= step.distanceMeters) {
       _distanceInStep -= step.distanceMeters;
@@ -395,6 +413,23 @@ class NavigationEngine extends ChangeNotifier {
     _heading = _bearing(seg.from, seg.to);
     _targetSpeed = 40 + (_heading % 20);
     notifyListeners();
+  }
+
+  void _announceStep(NavStep step, double stepRemaining) {
+    final s = settings.strings;
+    if (step.turn != TurnType.straight &&
+        step.turn != TurnType.arrive &&
+        step.turn != TurnType.depart &&
+        step.turn != TurnType.merge) {
+      final key = '$_stepIndex';
+      if (!_announced.contains(key) && stepRemaining <= 300) {
+        _announced.add(key);
+        final street = step.streetName.isNotEmpty ? step.streetName : '';
+        final dir = step.turn == TurnType.turnRight ? s.turnRight : s.turnLeft;
+        final msg = street.isNotEmpty ? '$dir, $street' : dir;
+        tts.speak(msg);
+      }
+    }
   }
 
   void _finish() {
