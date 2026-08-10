@@ -1,14 +1,14 @@
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter/services.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:maplibre_gl/maplibre_gl.dart' as ml;
 import 'package:provider/provider.dart';
 
 import '../services/location_service.dart';
 import '../services/navigation_engine.dart';
 import '../services/settings_service.dart';
 import '../theme/app_theme.dart';
-import '../widgets/yellow_arrow_marker.dart';
 
 class MapScreen extends StatefulWidget {
   final VoidCallback onMenuTap;
@@ -49,17 +49,60 @@ String _fmtDur(int seconds) {
   return '$s сек';
 }
 
-class _MapScreenState extends State<MapScreen> {
-  final _mapController = MapController();
-  double _zoom = 4;
-  bool _following = true;
+ml.LatLng _toMl(LatLng ll) => ml.LatLng(ll.latitude, ll.longitude);
 
-  // Кэши слоёв маршрута (пересоздаём только при смене маршрута, не каждый тик)
+// Зона вокруг пользователя (в пикселях при данном zoom):
+// px = 120 м * 2^zoom / (156543.03 * cos(lat)) — для Москвы cos ≈ 0.563
+const _zoneRadius = [
+  'interpolate',
+  ['exponential', 2],
+  ['zoom'],
+  10,
+  1.39,
+  20,
+  1428.0,
+];
+
+Map<String, dynamic> _lineString(List<LatLng> pts) => {
+      'type': 'LineString',
+      'coordinates': [
+        for (final p in pts) [p.longitude, p.latitude],
+      ],
+    };
+
+Map<String, dynamic> _emptyCollection() => {
+      'type': 'FeatureCollection',
+      'features': <dynamic>[],
+    };
+
+Map<String, dynamic> _pointFeature(LatLng p, {Map<String, dynamic>? props}) => {
+      'type': 'Feature',
+      'properties': props ?? <String, dynamic>{},
+      'geometry': {
+        'type': 'Point',
+        'coordinates': [p.longitude, p.latitude],
+      },
+    };
+
+class _MapScreenState extends State<MapScreen> {
+  ml.MapLibreMapController? _controller;
+  double _zoom = 16;
+  bool _following = true;
+  bool _styleReady = false;
+  bool _centerAfterLoad = false;
+  DateTime _programmaticUntil = DateTime.fromMillisecondsSinceEpoch(0);
+
+  // Кэши источников (пересоздаём только при смене данных)
   List<RouteOption>? _cacheSelOptions;
   int _cacheSelIndex = -1;
-  Widget? _cacheSelectingLayer;
+  Map<String, dynamic>? _cacheRoutesFc;
   List<LatLng>? _cacheActivePts;
-  Widget? _cacheActiveLayer;
+  Map<String, dynamic>? _cacheActiveFc;
+  LatLng? _cacheUserPos;
+  double? _cacheUserHeading;
+  LatLng? _cacheDest;
+  String? _cacheDestName;
+  bool _darkMode = false;
 
   @override
   void initState() {
@@ -68,10 +111,29 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   @override
+  void didUpdateWidget(covariant MapScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final settings = context.read<SettingsService>();
+    final isDark = settings.themeMode == ThemeMode.dark;
+    if (isDark != _darkMode) {
+      _darkMode = isDark;
+      _styleReady = false;
+      _resetSourceCaches();
+      _controller?.setStyle(_styleUrl(isDark)).catchError((_) {
+        _styleReady = true;
+      });
+    }
+  }
+
+  @override
   void dispose() {
-    _mapController.dispose();
+    _controller?.dispose();
     super.dispose();
   }
+
+  String _styleUrl(bool isDark) => isDark
+      ? 'https://tiles.openfreemap.org/styles/dark'
+      : 'https://tiles.openfreemap.org/styles/liberty';
 
   Future<void> _locateOnStart() async {
     final engine = context.read<NavigationEngine>();
@@ -79,21 +141,38 @@ class _MapScreenState extends State<MapScreen> {
     final point = await location.tryGetLocation();
     if (!mounted || point == null) return;
     engine.setPosition(point);
-    _mapController.move(point, 16);
+    _centerAfterLoad = true;
   }
 
-  void _centerOnUser() {
+  void _centerOnUser({bool force = false}) {
+    final c = _controller;
+    if (c == null || !_styleReady) return;
     final engine = context.read<NavigationEngine>();
     setState(() => _following = true);
-    final z = engine.isActive ? (_zoom < 14 ? 17.0 : _zoom) : (_zoom < 12 ? 16.0 : _zoom);
-    _mapController.moveAndRotate(engine.position, z, engine.heading);
+    final z = engine.isActive
+        ? (_zoom < 14 ? 17.0 : _zoom)
+        : (_zoom < 12 ? 16.0 : _zoom);
+    _programmaticUntil = DateTime.now().add(const Duration(milliseconds: 700));
+    c.animateCamera(
+      ml.CameraUpdate.newCameraPosition(
+        ml.CameraPosition(
+          target: _toMl(engine.position),
+          zoom: z,
+          tilt: engine.isActive ? 60 : 0,
+          bearing: engine.isActive ? engine.heading : 0,
+        ),
+      ),
+      duration: Duration(milliseconds: force ? 0 : 500),
+    );
   }
 
-  void _onPositionChanged(MapCamera camera, bool hasGesture) {
-    if (hasGesture && !_isNavActive(context)) {
+  void _onCameraMove(ml.CameraPosition cameraPosition) {
+    _zoom = cameraPosition.zoom;
+    if (DateTime.now().isAfter(_programmaticUntil) &&
+        !_isNavActive(context) &&
+        _following) {
       _following = false;
     }
-    _zoom = camera.zoom;
   }
 
   bool _isNavActive(BuildContext context) =>
@@ -102,21 +181,308 @@ class _MapScreenState extends State<MapScreen> {
   // Следование за пользователем: двигаем камеру, только если
   // пользователь ушёл от центра экрана дальше порога (~18% меньшей стороны).
   void _followIfNeeded(NavigationEngine engine) {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    final c = _controller;
+    if (c == null || !_styleReady) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
-      final cam = _mapController.camera;
-      if (cam == null) return;
-      final userPixel = cam.latLngToScreenOffset(engine.position);
-      final centerPixel = Offset(cam.size.width / 2, cam.size.height / 2);
-      final dist = (userPixel - centerPixel).distance;
-      final threshold = cam.size.shortestSide * 0.18;
-      if (dist > threshold) {
+      try {
+        final bounds = await c.getVisibleRegion();
+        if (!mounted) return;
+        final pos = engine.position;
+        final dLat =
+            (bounds.northeast.latitude - bounds.southwest.latitude) * 0.18;
+        final dLng =
+            (bounds.northeast.longitude - bounds.southwest.longitude) * 0.18;
+        final inside = pos.latitude >= bounds.southwest.latitude + dLat &&
+            pos.latitude <= bounds.northeast.latitude - dLat &&
+            pos.longitude >= bounds.southwest.longitude + dLng &&
+            pos.longitude <= bounds.northeast.longitude - dLng;
+        if (inside) return;
         final z = engine.isActive
             ? (_zoom < 14 ? 17.0 : _zoom)
             : (_zoom < 12 ? 16.0 : _zoom);
-        _mapController.moveAndRotate(engine.position, z, engine.heading);
+        _programmaticUntil =
+            DateTime.now().add(const Duration(milliseconds: 700));
+        c.animateCamera(
+          ml.CameraUpdate.newCameraPosition(
+            ml.CameraPosition(
+              target: _toMl(pos),
+              zoom: z,
+              tilt: engine.isActive ? 60 : 0,
+              bearing: engine.isActive ? engine.heading : 0,
+            ),
+          ),
+          duration: const Duration(milliseconds: 600),
+        );
+      } catch (_) {
+        // Игнорируем ошибки камеры (напр. на web во время инициализации)
       }
     });
+  }
+
+  Future<void> _setupLayers() async {
+    final c = _controller;
+    if (c == null) return;
+    final engine = context.read<NavigationEngine>();
+    _programmaticUntil = DateTime.now().add(const Duration(milliseconds: 700));
+    if (engine.isActive || _following) {
+      c.animateCamera(
+        ml.CameraUpdate.newCameraPosition(
+          ml.CameraPosition(
+            target: _toMl(engine.position),
+            zoom: _zoom < 14 ? 17.0 : _zoom,
+            tilt: engine.isActive ? 60 : 0,
+            bearing: engine.isActive ? engine.heading : 0,
+          ),
+        ),
+        duration: const Duration(milliseconds: 400),
+      );
+    }
+
+    final arrowBytes = (await rootBundle.load('assets/images/user_arrow.png'))
+        .buffer
+        .asUint8List();
+    final pinBytes =
+        (await rootBundle.load('assets/images/dest_pin.png')).buffer
+            .asUint8List();
+    await c.addImage('user_arrow', arrowBytes);
+    await c.addImage('dest_pin', pinBytes);
+
+    // ── Варианты маршрута (выбор) ──
+    await c.addGeoJsonSource('routes', _emptyCollection());
+    await c.addLineLayer(
+      'routes',
+      'route-alt',
+      const ml.LineLayerProperties(
+        lineWidth: 3,
+        lineColor: '#1E88E5',
+        lineOpacity: 0.35,
+      ),
+      filter: ['==', ['get', 'selected'], 0],
+    );
+    await c.addLineLayer(
+      'routes',
+      'route-main',
+      ml.LineLayerProperties(
+        lineWidth: [
+          'case',
+          ['==', ['get', 'selected'], 1],
+          5.0,
+          3.0,
+        ],
+        lineColor: [
+          'case',
+          ['==', ['get', 'selected'], 1],
+          '#00E676',
+          '#1E88E5',
+        ],
+        lineOpacity: [
+          'case',
+          ['==', ['get', 'selected'], 1],
+          1.0,
+          0.35,
+        ],
+      ),
+      filter: ['!=', ['get', 'selected'], 1],
+    );
+
+    // ── Активный маршрут (навигация) ──
+    await c.addGeoJsonSource('active', _emptyCollection());
+    await c.addLineLayer(
+      'active',
+      'route-glow',
+      const ml.LineLayerProperties(
+        lineWidth: 16,
+        lineColor: '#00E676',
+        lineOpacity: 0.12,
+        lineCap: 'round',
+      ),
+    );
+    await c.addLineLayer(
+      'active',
+      'route-shadow',
+      const ml.LineLayerProperties(
+        lineWidth: 10,
+        lineColor: '#00C853',
+        lineOpacity: 0.2,
+        lineCap: 'round',
+      ),
+    );
+    await c.addLineLayer(
+      'active',
+      'route-main',
+      const ml.LineLayerProperties(
+        lineWidth: 7,
+        lineColor: '#00E676',
+        lineCap: 'round',
+      ),
+    );
+    await c.addLineLayer(
+      'active',
+      'route-center',
+      const ml.LineLayerProperties(
+        lineWidth: 2,
+        lineColor: '#FFFFFF',
+        lineOpacity: 0.5,
+        lineCap: 'round',
+      ),
+    );
+
+    // ── 3D здания (только тёмная тема: dark стиль без встроенных зданий) ──
+    if (_darkMode) {
+      await c.addFillExtrusionLayer(
+        'openmaptiles',
+        'buildings-3d',
+        ml.FillExtrusionLayerProperties(
+          fillExtrusionColor: '#3A3F4B',
+          fillExtrusionOpacity: 0.75,
+          fillExtrusionHeight: ['get', 'render_height'],
+          fillExtrusionBase: ['get', 'render_min_height'],
+        ),
+        sourceLayer: 'building',
+        filter: ['>', ['get', 'render_height'], 0],
+      );
+    }
+
+    // ── Зона точности вокруг пользователя ──
+    await c.addGeoJsonSource('zone', _emptyCollection());
+    await c.addCircleLayer(
+      'zone',
+      'user-zone',
+      const ml.CircleLayerProperties(
+        circleRadius: _zoneRadius,
+        circleColor: 'rgba(0,230,118,0.08)',
+        circleStrokeColor: 'rgba(0,230,118,0.2)',
+        circleStrokeWidth: 1.5,
+      ),
+    );
+
+    // ── Пользователь (стрелка) ──
+    await c.addGeoJsonSource('user', _emptyCollection());
+    await c.addSymbolLayer(
+      'user',
+      'user-arrow',
+      const ml.SymbolLayerProperties(
+        iconImage: 'user_arrow',
+        iconSize: 0.32,
+        iconAnchor: 'center',
+        iconAllowOverlap: true,
+        iconIgnorePlacement: true,
+        iconRotationAlignment: 'map',
+        iconPitchAlignment: 'map',
+      ),
+    );
+    await c.setLayerProperties(
+      'user-arrow',
+      ml.SymbolLayerProperties(iconRotate: ['get', 'heading']),
+    );
+
+    // ── Назначение ──
+    await c.addGeoJsonSource('dest', _emptyCollection());
+    await c.addSymbolLayer(
+      'dest',
+      'dest-pin',
+      const ml.SymbolLayerProperties(
+        iconImage: 'dest_pin',
+        iconSize: 0.45,
+        iconAnchor: 'bottom',
+        iconAllowOverlap: true,
+      ),
+    );
+
+    _styleReady = true;
+    _syncSources(engine);
+  }
+
+  void _resetSourceCaches() {
+    _cacheRoutesFc = null;
+    _cacheActiveFc = null;
+    _cacheActivePts = null;
+    _cacheUserPos = null;
+    _cacheUserHeading = null;
+    _cacheDest = null;
+    _cacheDestName = null;
+  }
+
+  void _syncSources(NavigationEngine engine) {
+    final c = _controller;
+    if (c == null || !_styleReady) return;
+
+    // Варианты маршрута
+    if (engine.isSelecting && engine.routeOptions.isNotEmpty) {
+      if (_cacheRoutesFc == null ||
+          _cacheSelOptions != engine.routeOptions ||
+          _cacheSelIndex != engine.selectedRouteIndex) {
+        _cacheSelOptions = engine.routeOptions;
+        _cacheSelIndex = engine.selectedRouteIndex;
+        _cacheRoutesFc = {
+          'type': 'FeatureCollection',
+          'features': [
+            for (var i = 0; i < engine.routeOptions.length; i++)
+              {
+                'type': 'Feature',
+                'properties': {
+                  'selected': i == engine.selectedRouteIndex ? 1 : 0,
+                },
+                'geometry': _lineString(engine.routeOptions[i].polyline),
+              },
+          ],
+        };
+        c.setGeoJsonSource('routes', _cacheRoutesFc!);
+      }
+    } else if (_cacheRoutesFc != null) {
+      _cacheRoutesFc = null;
+      c.setGeoJsonSource('routes', _emptyCollection());
+    }
+
+    // Активный маршрут
+    if (engine.isActive && engine.activePolyline.length >= 2) {
+      final pts = engine.activePolyline;
+      if (_cacheActiveFc == null || !identical(pts, _cacheActivePts)) {
+        _cacheActivePts = pts;
+        _cacheActiveFc = {
+          'type': 'FeatureCollection',
+          'features': [
+            {
+              'type': 'Feature',
+              'properties': <String, dynamic>{},
+              'geometry': _lineString(pts),
+            },
+          ],
+        };
+        c.setGeoJsonSource('active', _cacheActiveFc!);
+      }
+    } else if (_cacheActiveFc != null) {
+      _cacheActiveFc = null;
+      _cacheActivePts = null;
+      c.setGeoJsonSource('active', _emptyCollection());
+    }
+
+    // Пользователь
+    final pos = engine.position;
+    final heading = engine.heading;
+    if (_cacheUserPos != pos || _cacheUserHeading != heading) {
+      _cacheUserPos = pos;
+      _cacheUserHeading = heading;
+      c.setGeoJsonSource(
+        'user',
+        _pointFeature(pos, props: {'heading': heading}),
+      );
+      c.setGeoJsonSource('zone', _pointFeature(pos));
+    }
+
+    // Назначение
+    final dest = engine.destination;
+    final destName = engine.destinationName ?? '';
+    if (dest != null && (_cacheDest != dest || _cacheDestName != destName)) {
+      _cacheDest = dest;
+      _cacheDestName = destName;
+      c.setGeoJsonSource('dest', _pointFeature(dest));
+    } else if (dest == null && _cacheDest != null) {
+      _cacheDest = null;
+      _cacheDestName = null;
+      c.setGeoJsonSource('dest', _emptyCollection());
+    }
   }
 
   @override
@@ -126,13 +492,13 @@ class _MapScreenState extends State<MapScreen> {
     final isDark = settings.themeMode == ThemeMode.dark;
     final isRu = settings.language == AppLanguage.ru;
 
+    _darkMode = isDark;
+    if (_styleReady) {
+      _syncSources(engine);
+    }
     if (_following || engine.isActive) {
       _followIfNeeded(engine);
     }
-
-    final tileUrl = isDark
-        ? 'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png'
-        : 'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png';
 
     final padTop = MediaQuery.of(context).padding.top;
     final padBot = MediaQuery.of(context).padding.bottom;
@@ -140,63 +506,28 @@ class _MapScreenState extends State<MapScreen> {
     return Stack(
       children: [
         // Map
-        FlutterMap(
-          mapController: _mapController,
-          options: MapOptions(
-            initialCenter: engine.position,
-            initialZoom: _following ? 16 : 4,
-            minZoom: 2,
-            maxZoom: 19,
-            onPositionChanged: _onPositionChanged,
-            backgroundColor: isDark ? AppTheme.darkBg : const Color(0xFFE8EDF3),
-            interactionOptions: const InteractionOptions(
-              flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
-            ),
+        ml.MapLibreMap(
+          initialCameraPosition: ml.CameraPosition(
+            target: _toMl(engine.position),
+            zoom: _following ? 16 : 4,
           ),
-          children: [
-            TileLayer(
-              urlTemplate: tileUrl,
-              userAgentPackageName: 'com.jarin.jarinnavigator',
-              maxZoom: 19,
-              subdomains: const ['a', 'b', 'c'],
-            ),
-            _buildRouteLayer(engine),
-            MarkerLayer(
-              markers: [
-                Marker(
-                  point: engine.position,
-                  width: 50,
-                  height: 50,
-                  child: YellowArrowMarker(
-                    heading: engine.heading,
-                    size: 50,
-                  ),
-                ),
-                if (engine.destination != null)
-                  Marker(
-                    point: engine.destination!,
-                    width: 48,
-                    height: 48,
-                    child: _DestinationMarker(
-                      name: engine.destinationName ?? '',
-                    ),
-                  ),
-              ],
-            ),
-            if (_zoom >= 10)
-              CircleLayer(
-                circles: [
-                  CircleMarker(
-                    point: engine.position,
-                    radius: 120,
-                    useRadiusInMeter: true,
-                    color: AppTheme.accent.withValues(alpha: 0.08),
-                    borderColor: AppTheme.accent.withValues(alpha: 0.2),
-                    borderStrokeWidth: 1,
-                  ),
-                ],
-              ),
-          ],
+          styleString: _styleUrl(isDark),
+          minMaxZoomPreference: const ml.MinMaxZoomPreference(2, 19),
+          tiltGesturesEnabled: true,
+          rotateGesturesEnabled: true,
+          scrollGesturesEnabled: true,
+          compassEnabled: true,
+          onMapCreated: (controller) {
+            _controller = controller;
+          },
+          onStyleLoadedCallback: () async {
+            await _setupLayers();
+            if (_centerAfterLoad) {
+              _centerAfterLoad = false;
+              _centerOnUser(force: true);
+            }
+          },
+          onCameraMove: _onCameraMove,
         ),
 
         // Top bar — hamburger + bus + title + compass
@@ -220,7 +551,9 @@ class _MapScreenState extends State<MapScreen> {
               const Spacer(),
               Column(
                 children: [
-                  Icon(Icons.water_rounded, size: 20, color: isDark ? Colors.white70 : Colors.black54),
+                  Icon(Icons.water_rounded,
+                      size: 20,
+                      color: isDark ? Colors.white70 : Colors.black54),
                   const SizedBox(height: 2),
                   Text(
                     'Jarin',
@@ -237,7 +570,21 @@ class _MapScreenState extends State<MapScreen> {
               _TopBtn(
                 icon: Icons.explore_rounded,
                 onTap: () {
-                  _mapController.moveAndRotate(engine.position, _zoom, 0);
+                  final c = _controller;
+                  if (c == null || !_styleReady) return;
+                  _programmaticUntil =
+                      DateTime.now().add(const Duration(milliseconds: 700));
+                  c.animateCamera(
+                    ml.CameraUpdate.newCameraPosition(
+                      ml.CameraPosition(
+                        target: _toMl(engine.position),
+                        zoom: _zoom,
+                        tilt: 0,
+                        bearing: 0,
+                      ),
+                    ),
+                    duration: const Duration(milliseconds: 500),
+                  );
                   setState(() => _following = true);
                 },
                 isDark: isDark,
@@ -261,8 +608,11 @@ class _MapScreenState extends State<MapScreen> {
               _SideBtn(
                 icon: Icons.add_rounded,
                 onTap: () {
-                  final newZoom = (_zoom + 1).clamp(2.0, 19.0);
-                  _mapController.move(engine.position, newZoom);
+                  final c = _controller;
+                  if (c == null || !_styleReady) return;
+                  _programmaticUntil =
+                      DateTime.now().add(const Duration(milliseconds: 700));
+                  c.animateCamera(ml.CameraUpdate.zoomIn());
                 },
                 isDark: isDark,
               ),
@@ -270,8 +620,11 @@ class _MapScreenState extends State<MapScreen> {
               _SideBtn(
                 icon: Icons.remove_rounded,
                 onTap: () {
-                  final newZoom = (_zoom - 1).clamp(2.0, 19.0);
-                  _mapController.move(engine.position, newZoom);
+                  final c = _controller;
+                  if (c == null || !_styleReady) return;
+                  _programmaticUntil =
+                      DateTime.now().add(const Duration(milliseconds: 700));
+                  c.animateCamera(ml.CameraUpdate.zoomOut());
                 },
                 isDark: isDark,
               ),
@@ -339,93 +692,6 @@ class _MapScreenState extends State<MapScreen> {
               isDark: isDark,
               isRu: isRu,
             ),
-          ),
-      ],
-    );
-  }
-
-  Widget _buildRouteLayer(NavigationEngine engine) {
-    if (engine.isSelecting && engine.routeOptions.isNotEmpty) {
-      if (_cacheSelectingLayer == null ||
-          _cacheSelOptions != engine.routeOptions ||
-          _cacheSelIndex != engine.selectedRouteIndex) {
-        _cacheSelOptions = engine.routeOptions;
-        _cacheSelIndex = engine.selectedRouteIndex;
-        _cacheSelectingLayer = Stack(
-          children: [
-            for (var i = 0; i < engine.routeOptions.length; i++)
-              PolylineLayer(
-                polylines: [
-                  Polyline(
-                    points: engine.routeOptions[i].polyline,
-                    strokeWidth: i == engine.selectedRouteIndex ? 5 : 3,
-                    color: i == engine.selectedRouteIndex
-                        ? AppTheme.accent
-                        : AppTheme.accent.withValues(alpha: 0.3),
-                  ),
-                ],
-              ),
-          ],
-        );
-      }
-      return _cacheSelectingLayer!;
-    }
-
-    if (engine.isActive && engine.activePolyline.isNotEmpty) {
-      final pts = engine.activePolyline;
-      if (_cacheActiveLayer == null || !identical(pts, _cacheActivePts)) {
-        _cacheActivePts = pts;
-        _cacheActiveLayer = _buildActivePolyline(pts);
-      }
-      return _cacheActiveLayer!;
-    }
-
-    // Сброс кэшей при смене режима
-    if (_cacheSelectingLayer != null || _cacheActiveLayer != null) {
-      _cacheSelectingLayer = null;
-      _cacheActiveLayer = null;
-      _cacheSelOptions = null;
-      _cacheActivePts = null;
-    }
-
-    return const SizedBox.shrink();
-  }
-
-  Widget _buildActivePolyline(List<LatLng> pts) {
-    final count = pts.length;
-    if (count < 2) return const SizedBox.shrink();
-
-    return PolylineLayer(
-      polylines: [
-        // Outer glow
-        Polyline(
-          points: pts,
-          strokeWidth: 16,
-          color: const Color(0xFF00E676).withValues(alpha: 0.12),
-        ),
-        // Shadow
-        Polyline(
-          points: pts,
-          strokeWidth: 10,
-          color: const Color(0xFF00C853).withValues(alpha: 0.2),
-        ),
-        // Main gradient
-        for (var i = 0; i < count - 1; i++)
-          Polyline(
-            points: [pts[i], pts[i + 1]],
-            strokeWidth: 7,
-            color: Color.lerp(
-              const Color(0xFF00E676),
-              const Color(0xFF00BCD4),
-              count > 1 ? i / (count - 1) : 0,
-            )!,
-          ),
-        // White center highlight
-        for (var i = 0; i < count - 1; i++)
-          Polyline(
-            points: [pts[i], pts[i + 1]],
-            strokeWidth: 2,
-            color: Colors.white.withValues(alpha: 0.5),
           ),
       ],
     );
@@ -649,7 +915,8 @@ class _TurnBanner extends StatelessWidget {
                   step.streetName,
                   style: TextStyle(
                     fontSize: 12,
-                    color: isDark ? AppTheme.darkSubtext : AppTheme.lightSubtext,
+                    color:
+                        isDark ? AppTheme.darkSubtext : AppTheme.lightSubtext,
                   ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -756,7 +1023,8 @@ class _RoutePanelState extends State<_RoutePanel>
               Row(
                 children: [
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
                       gradient: const LinearGradient(
                         colors: [AppTheme.success, AppTheme.routeEnd],
@@ -782,7 +1050,8 @@ class _RoutePanelState extends State<_RoutePanel>
                           style: TextStyle(
                             fontSize: 15,
                             fontWeight: FontWeight.w600,
-                            color: isDark ? AppTheme.darkText : AppTheme.lightText,
+                            color:
+                                isDark ? AppTheme.darkText : AppTheme.lightText,
                           ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -791,7 +1060,9 @@ class _RoutePanelState extends State<_RoutePanel>
                           best != null ? _fmtDist(best.distanceMeters) : '',
                           style: TextStyle(
                             fontSize: 12,
-                            color: isDark ? AppTheme.darkSubtext : AppTheme.lightSubtext,
+                            color: isDark
+                                ? AppTheme.darkSubtext
+                                : AppTheme.lightSubtext,
                           ),
                         ),
                       ],
@@ -819,7 +1090,9 @@ class _RoutePanelState extends State<_RoutePanel>
                             style: TextStyle(
                               fontSize: 14,
                               fontWeight: FontWeight.w600,
-                              color: isDark ? AppTheme.darkText : AppTheme.lightText,
+                              color: isDark
+                                  ? AppTheme.darkText
+                                  : AppTheme.lightText,
                             ),
                           ),
                         ),
@@ -914,163 +1187,101 @@ class _ProgressBar extends StatelessWidget {
             ],
           ),
           child: SafeArea(
-        top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
+            top: false,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFF00E676), Color(0xFF00BCD4)],
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFF00E676), Color(0xFF00BCD4)],
+                        ),
+                        borderRadius: BorderRadius.circular(10),
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFF00E676)
+                                .withValues(alpha: 0.3),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Text(
+                        etaTime,
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
+                        ),
+                      ),
                     ),
-                    borderRadius: BorderRadius.circular(10),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFF00E676).withValues(alpha: 0.3),
-                        blurRadius: 8,
-                        offset: const Offset(0, 2),
+                    const SizedBox(width: 10),
+                    Text(
+                      '$totalRemaining ${isRu ? "осталось" : "left"}',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color:
+                            isDark ? AppTheme.darkText : AppTheme.lightText,
+                      ),
+                    ),
+                    const Spacer(),
+                    // Cancel
+                    GestureDetector(
+                      onTap: engine.cancelRoute,
+                      child: Container(
+                        width: 36,
+                        height: 36,
+                        decoration: BoxDecoration(
+                          color: AppTheme.danger.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(Icons.close_rounded,
+                            size: 20, color: AppTheme.danger),
+                      ),
+                    ),
+                  ],
+                ),
+                if (nextStreet.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      Icon(
+                        step?.turn == TurnType.turnRight
+                            ? Icons.turn_right
+                            : step?.turn == TurnType.turnLeft
+                                ? Icons.turn_left
+                                : Icons.straight,
+                        size: 18,
+                        color: AppTheme.accent,
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          nextStreet,
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500,
+                            color: isDark
+                                ? AppTheme.darkSubtext
+                                : AppTheme.lightSubtext,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                     ],
                   ),
-                  child: Text(
-                    etaTime,
-                    style: const TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w800,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Text(
-                  '$totalRemaining ${isRu ? "осталось" : "left"}',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: isDark ? AppTheme.darkText : AppTheme.lightText,
-                  ),
-                ),
-                const Spacer(),
-                // Cancel
-                GestureDetector(
-                  onTap: engine.cancelRoute,
-                  child: Container(
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(
-                      color: AppTheme.danger.withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: const Icon(Icons.close_rounded, size: 20, color: AppTheme.danger),
-                  ),
-                ),
+                ],
               ],
             ),
-            if (nextStreet.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Row(
-                children: [
-                  Icon(
-                    step?.turn == TurnType.turnRight
-                        ? Icons.turn_right
-                        : step?.turn == TurnType.turnLeft
-                            ? Icons.turn_left
-                            : Icons.straight,
-                    size: 18,
-                    color: AppTheme.accent,
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      nextStreet,
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500,
-                        color: isDark ? AppTheme.darkSubtext : AppTheme.lightSubtext,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ],
+          ),
         ),
-      ),
-      ),
       ),
     );
   }
-}
-
-// ── Destination marker ──
-class _DestinationMarker extends StatelessWidget {
-  final String name;
-
-  const _DestinationMarker({required this.name});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              colors: [Color(0xFFFF5252), Color(0xFFD32F2F)],
-            ),
-            borderRadius: BorderRadius.circular(10),
-            boxShadow: [
-              BoxShadow(
-                color: const Color(0xFFFF5252).withValues(alpha: 0.5),
-                blurRadius: 12,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: Text(
-            name.isNotEmpty ? name : 'Цель',
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
-        CustomPaint(
-          size: const Size(20, 12),
-          painter: _PinPainter(),
-        ),
-      ],
-    );
-  }
-}
-
-class _PinPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..shader = const LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [Color(0xFFD32F2F), Color(0xFFB71C1C)],
-      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
-
-    final path = ui.Path()
-      ..moveTo(0, 0)
-      ..lineTo(size.width, 0)
-      ..lineTo(size.width / 2, size.height)
-      ..close();
-    canvas.drawPath(path, paint);
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

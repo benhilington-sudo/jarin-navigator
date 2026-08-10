@@ -46,6 +46,7 @@ dependencies:
   firebase_core: ^3.12.1
   firebase_auth: ^5.5.4
   google_sign_in: ^6.2.2
+  maplibre_gl: ^0.26.2
 
 dev_dependencies:
   flutter_test:
@@ -73,6 +74,8 @@ flutter:
     - assets/voice/voice_welcome.mp3
     - assets/voice/voice_turn_right.mp3
     - assets/voice/voice_turn_left.mp3
+    - assets/images/user_arrow.png
+    - assets/images/dest_pin.png
 
   # To add assets to your application, add an assets section, like this:
   # assets:
