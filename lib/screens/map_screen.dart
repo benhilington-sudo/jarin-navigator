@@ -132,8 +132,8 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   String _styleUrl(bool isDark) => isDark
-      ? 'https://tiles.openfreemap.org/styles/dark'
-      : 'https://tiles.openfreemap.org/styles/liberty';
+      ? 'https://jarin-navigator.duckdns.org/ofm/styles/dark.json'
+      : 'https://jarin-navigator.duckdns.org/ofm/styles/liberty.json';
 
   Future<void> _locateOnStart() async {
     final engine = context.read<NavigationEngine>();
