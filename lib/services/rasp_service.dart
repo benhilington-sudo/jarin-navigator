@@ -69,7 +69,7 @@ class RaspSchedule {
 
 class RaspService {
   static const _apiKey = '7563729e-960d-44e9-8b80-4a17538f6200';
-  static const _proxy = 'http://127.0.0.1:8080/proxy/rasp';
+  static const _proxy = 'https://jarin-navigator.duckdns.org/proxy/rasp';
 
   RaspService(String _ignored);
 

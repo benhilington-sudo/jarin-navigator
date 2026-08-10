@@ -42,9 +42,9 @@ class PoiService {
 out center;
 ''';
     try {
-      // Use local proxy to avoid CORS and rate limits
+      // Proxy via our server to avoid CORS and rate limits
       final resp = await http.post(
-        Uri.parse('http://localhost:8080/proxy/overpass'),
+        Uri.parse('https://jarin-navigator.duckdns.org/proxy/overpass'),
         body: 'data=${Uri.encodeComponent(q)}',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
