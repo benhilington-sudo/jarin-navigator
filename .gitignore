@@ -35,3 +35,6 @@ ios/Flutter/Generated.xcconfig
 # Misc
 *.log
 node_modules/
+
+apk_*.txt
+build_*.txt
